@@ -69,6 +69,13 @@ gunzip -c 01302020.NASDAQ_ITCH50.gz | ./build-release/itch_stats -
 Synthetic file with 2M messages (90% book messages), Apple Silicon, Release build:
 ~39M msg/s, ~1.3 GB/s (decode only, warm page cache).
 
+Full NASDAQ trading day (2019-12-30), Apple Silicon, Release build:
+
+| Input | Messages | Time | Throughput |
+|---|---|---|---|
+| Piped through `gunzip` | 268.7M | 125.8 s | 2.1M msg/s (`gunzip`-bound) |
+| Uncompressed file (warm cache, median of 5) | 268.7M | 4.92 s (4.83–4.98) | 54.7M msg/s, 1.68 GB/s |
+
 ## Next
 
 1. Run against a full NASDAQ sample day and record the numbers here.
