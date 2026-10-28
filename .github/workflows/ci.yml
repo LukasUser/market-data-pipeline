@@ -1,7 +1,10 @@
 name: CI
 
+# Pushes to main run CI directly; other branches get CI through their pull
+# request, so a PR branch isn't tested twice.
 on:
   push:
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
