@@ -1,0 +1,12 @@
+# Build directories
+build*/
+
+# Market data files (several GB each)
+*.NASDAQ_ITCH50
+*.NASDAQ_ITCH50.gz
+*.itch
+
+.DS_Store
+
+# Local Claude Code settings
+.claude/settings.local.json
