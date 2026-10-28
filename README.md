@@ -1,5 +1,7 @@
 # ITCH 5.0 feed handler
 
+[![CI](https://github.com/LukasUser/market-data-pipeline/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/LukasUser/market-data-pipeline/actions/workflows/ci.yml)
+
 A C++20 decoder for NASDAQ TotalView-ITCH 5.0, the first stage of a market data
 → order book → strategy pipeline.
 
@@ -36,6 +38,9 @@ cmake --build build && ./build/itch_tests
 cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DITCH_SANITIZE=ON
 cmake --build build-asan && ./build-asan/itch_tests
 ```
+
+CI runs both configurations (Release, and Debug with ASan+UBSan) with GCC and
+Clang on Linux and Apple Clang on macOS. See `.github/workflows/ci.yml`.
 
 ## Running on real data
 

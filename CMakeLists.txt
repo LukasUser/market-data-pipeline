@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.25)
 project(itch LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -14,7 +14,9 @@ option(ITCH_BUILD_TESTS "Build unit tests" ON)
 option(ITCH_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
 if(ITCH_SANITIZE)
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+  # -fno-sanitize-recover makes UBSan abort (and fail the test) instead of
+  # printing a warning and carrying on.
+  add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
@@ -38,6 +40,9 @@ if(ITCH_BUILD_TESTS)
     googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.zip
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    # Treat GoogleTest headers as system headers so our -Werror flags don't
+    # trip on warnings inside its templates (GCC and Clang warn differently).
+    SYSTEM
   )
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
