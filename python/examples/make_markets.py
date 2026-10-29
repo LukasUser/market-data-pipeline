@@ -12,10 +12,9 @@ import sys
 import time
 
 from itchpy import PassiveSim
-from market_making import ImbalanceAware, JoinBest, make_markets
+from market_making import STRATEGIES, make_markets
 
 REBATE = 20  # $0.0020 per share, about NASDAQ's rebate for adding liquidity
-STRATEGIES = {"join": JoinBest, "imbalance": ImbalanceAware}
 
 
 def cents(dollars: float, shares: int) -> str:
