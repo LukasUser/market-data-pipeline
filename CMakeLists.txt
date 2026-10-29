@@ -31,6 +31,7 @@ add_library(itch
   src/decoder.cpp
   src/frame_reader.cpp
   src/market.cpp
+  src/matching_engine.cpp
   src/order_book.cpp
   src/quote_stream.cpp
 )
@@ -77,6 +78,7 @@ if(ITCH_BUILD_TESTS)
   add_executable(itch_tests
     tests/test_decoder.cpp
     tests/test_frame_reader.cpp
+    tests/test_matching_engine.cpp
     tests/test_order_book.cpp
     tests/test_quote_stream.cpp
   )

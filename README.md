@@ -9,7 +9,9 @@ TotalView-ITCH 5.0, with Python bindings for research.
 2. **Order book** (done): rebuilds every instrument's book from those messages.
 3. **Python quotes** (done): one symbol's top-of-book changes, streamed into Python.
 4. **Backtester** (done): event-driven, with latency, fees and an imbalance study.
-5. **Matching engine** (next): queue position, so passive orders can be simulated.
+5. **Matching engine** (in progress): price-time priority with per-order queues.
+   Next: check its queues against NASDAQ's own executions, then use queue
+   position to backtest resting orders.
 
 ## Feed handler
 
@@ -108,6 +110,32 @@ using this signal would have to *earn* the spread with resting orders instead
 of paying it, which is why the matching engine is next. One stock on one day
 is a single sample, not proof.
 
+## Matching engine
+
+`MatchingEngine` is a limit order book that matches with **price-time
+priority**: an incoming order trades with the best opposite price first and,
+at one price, with the order that has waited longest, always at the resting
+order's price. The rest of the order joins the back of the queue at its limit.
+
+| Operation | Cost | How |
+|---|---|---|
+| Submit (no match) | O(log L) | find or create the level in a `std::map`, append to its list |
+| Each fill | O(1) | pop from the front of the best level's list |
+| Cancel / partial cancel | O(1) + O(log L) | hash map from reference → list iterator; unlink the node |
+| Shares ahead of an order | O(position) | walk the level's list up to the order |
+
+`L` is the number of price levels on a side. A partial cancel changes the
+order's shares in place, so it keeps its place in the queue, as on NASDAQ.
+
+Unlike `OrderBook` (total shares per price, enough to rebuild ITCH), each level
+keeps its orders in a `std::list` in arrival order. A list never moves its
+elements, so the iterator stored in the hash map stays valid until that order
+leaves, and removing from the middle doesn't shift anyone else.
+
+Besides worked examples, a randomized test runs 20,000 orders and cancels and
+checks after each one that the book isn't crossed and that no shares appear
+or vanish.
+
 ## Layout
 
 - `include/itch/messages.hpp`: decoded message structs and `Message` variant
@@ -115,6 +143,7 @@ is a single sample, not proof.
 - `include/itch/frame_reader.hpp`: splits the 2-byte length-prefixed file format
 - `include/itch/order_book.hpp`: one instrument's book (orders + price levels)
 - `include/itch/market.hpp`: routes messages to one book per instrument
+- `include/itch/matching_engine.hpp`: price-time priority matching with per-order queues
 - `include/itch/quote_stream.hpp`: one symbol's top-of-book changes from a stream
 - `python/itchpy.cpp`: pybind11 bindings
 - `python/tests/`: Python tests (`unittest`), run by `ctest`
@@ -233,5 +262,7 @@ consolidated quote across all exchanges, so it is wider than AAPL's NBBO.
 1. Speed up the book: a flat hash map with reserved capacity for orders, and a
    cheaper price-level structure. Benchmark before and after.
 2. Validate executions against trade prints / daily volume.
-3. Matching engine with per-order queues, so the backtester can simulate
-   passive (resting) orders, not only market orders.
+3. Replay ITCH through `MatchingEngine` and check that every execution hits
+   the order at the front of its queue.
+4. Backtest resting orders using queue position: earn the spread instead of
+   paying it.
