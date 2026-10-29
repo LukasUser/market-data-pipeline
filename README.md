@@ -11,7 +11,8 @@ TotalView-ITCH 5.0, with Python bindings for research.
 4. **Backtester** (done): event-driven, with latency, fees and an imbalance study.
 5. **Matching engine** (done): price-time priority with per-order queues,
    validated against a full day of NASDAQ executions.
-6. **Resting-order backtest** (next): use queue position to earn the spread.
+6. **Resting-order backtest** (done): market making in NASDAQ's real queues.
+7. **Many days and symbols in parallel** (next).
 
 ## Feed handler
 
@@ -174,6 +175,53 @@ Book errors 0, resting orders at end of day 0.
   replaces either: replaced orders were front of queue in all 345,214 of
   their executions; every out-of-queue execution was on a freshly added order.
 
+## Resting-order backtest
+
+`PassiveSim` (C++, exposed to Python) replays one symbol through a
+`MatchingEngine` and keeps our own resting orders in its real queues, one per
+side. An order joins behind every real share already at its price; real
+orders ahead of it that execute or cancel move it forward. It fills when the
+market would have reached it first: a real order behind it at the same price
+executes, a real order at a worse price on its side executes, or a new order
+arrives priced through it. Requests take `latency_ns` to arrive, and the old
+order stays live (and can fill) until then. A size cut at the same price keeps
+the queue position; anything else rejoins at the back.
+
+Our orders don't move the market: NASDAQ's trades happen as reported, and
+nobody reacts to us. The position limit is checked when quoting, so an order
+already in flight can overshoot it by one order (600 against a 500 limit).
+
+`python/market_making.py` runs a strategy on it and explains the PnL:
+**spread captured** (distance from the mid at each fill), **markout** (how
+the mid moved 1 s and 60 s after the fill), **rebates** ($0.0020/share for
+resting liquidity) and closing any position at 16:00 with a market order.
+
+### Result: the spread is earned, then lost to adverse selection
+
+AAPL, 2019-12-30, 09:30–16:00, 100 shares a side, |position| ≤ 500
+(`python/examples/make_markets.py`). Per share filled:
+
+| Strategy | Latency | Shares filled | Spread captured | Markout 1 s | Markout 60 s | PnL before rebates | PnL with rebates |
+|---|---|---|---|---|---|---|---|
+| Join best bid and ask | 10 µs | 535,179 | +1.02¢ | −1.70¢ | −2.08¢ | −0.89¢ | **−0.69¢** (−$3,669) |
+| Same, skip the side imbalance says is weak | 10 µs | 305,060 | +1.08¢ | −1.86¢ | −2.20¢ | −0.98¢ | −0.78¢ (−$2,391) |
+| Join best bid and ask | 1 ms | 751,358 | +0.44¢ | −1.50¢ | −1.69¢ | −1.26¢ | −1.06¢ (−$7,940) |
+
+For comparison, crossing the spread with market orders lost −1.36¢ per share
+before fees (see Backtester).
+
+- **Resting earns the spread.** Each fill is about 1¢ better than the mid,
+  where a market order is about 1.3¢ worse.
+- **Then adverse selection takes it back.** Within a second of a fill the mid
+  has moved about 1.7¢ against us. A resting order fills when someone chooses
+  to trade with it, often because the price is about to move through it.
+  Joining the back of a long queue makes this worse: by the time it's our
+  turn, the level is usually being cleared.
+- **The simple imbalance filter doesn't help.** It halves the trading but the
+  fills it keeps are no better; the markout per share gets slightly worse.
+- **Latency hurts.** At 1 ms, quotes go stale: 1,466 requests arrive after the
+  market has moved through them, and spread captured falls from 1.02¢ to 0.44¢.
+
 ## Layout
 
 - `include/itch/messages.hpp`: decoded message structs and `Message` variant
@@ -183,12 +231,15 @@ Book errors 0, resting orders at end of day 0.
 - `include/itch/market.hpp`: routes messages to one book per instrument
 - `include/itch/matching_engine.hpp`: price-time priority matching with per-order queues
 - `include/itch/queue_audit.hpp`: checks NASDAQ's executions against the engine's queues
+- `include/itch/passive_sim.hpp`: our resting orders simulated in the real queues
 - `include/itch/quote_stream.hpp`: one symbol's top-of-book changes from a stream
 - `python/itchpy.cpp`: pybind11 bindings
 - `python/tests/`: Python tests (`unittest`), run by `ctest`
 - `python/examples/spread.py`: time-weighted bid-ask spread for a symbol
 - `python/backtest.py`: event-driven backtester, strategies, imbalance study
 - `python/examples/imbalance.py`: does imbalance predict the next move, and does it pay?
+- `python/market_making.py`: market-making loop, PnL attribution, strategies
+- `python/examples/make_markets.py`: runs a market-making strategy over a day
 - `tools/itch_stats.cpp`: counts messages by type and measures throughput
 - `tools/itch_book.cpp`: replays a file and prints one symbol's book
 - `tools/itch_queue.cpp`: queue audit over a whole file
@@ -303,5 +354,6 @@ consolidated quote across all exchanges, so it is wider than AAPL's NBBO.
    cheaper price-level structure. Benchmark before and after.
 2. Validate executions against trade prints / daily volume.
 3. Explain the 0.19% of regular-hours executions that skip ahead of our queue.
-4. Backtest resting orders using queue position: earn the spread instead of
-   paying it.
+4. Measure markout by queue position at the moment of the fill, to test whether
+   fills from the front of the queue are less adversely selected.
+5. Run many days and symbols in parallel, so results aren't one stock on one day.

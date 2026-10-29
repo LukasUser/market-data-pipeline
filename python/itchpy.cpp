@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "itch/order_book.hpp"
+#include "itch/passive_sim.hpp"
 #include "itch/quote_stream.hpp"
 
 namespace py = pybind11;
@@ -30,30 +31,44 @@ std::string level_repr(const std::optional<itch::Level>& level) {
   return "Level(" + price_repr(level->price) + " x " + std::to_string(level->shares) + ")";
 }
 
+// "-" means standard input (nullptr), for piping from gunzip.
+std::unique_ptr<std::ifstream> open_input(const std::filesystem::path& path) {
+  if (path == "-") return nullptr;
+  auto file = std::make_unique<std::ifstream>(path, std::ios::binary);
+  if (!*file) {
+    PyErr_SetString(PyExc_FileNotFoundError, ("cannot open " + path.string()).c_str());
+    throw py::error_already_set();
+  }
+  return file;
+}
+
 // Owns the input a QuoteStream reads from, so Python holds a single object.
-// "-" reads standard input, for piping from gunzip.
 class PyQuoteStream {
  public:
   PyQuoteStream(const std::filesystem::path& path, std::string symbol)
-      : file_(open(path)), stream_(file_ ? *file_ : std::cin, std::move(symbol)) {}
+      : file_(open_input(path)), stream_(file_ ? *file_ : std::cin, std::move(symbol)) {}
 
   std::optional<itch::Quote> next() { return stream_.next(); }
   const itch::QuoteStream& stream() const { return stream_; }
 
  private:
-  static std::unique_ptr<std::ifstream> open(const std::filesystem::path& path) {
-    if (path == "-") return nullptr;
-    auto file = std::make_unique<std::ifstream>(path, std::ios::binary);
-    if (!*file) {
-      PyErr_SetString(PyExc_FileNotFoundError, ("cannot open " + path.string()).c_str());
-      throw py::error_already_set();
-    }
-    return file;
-  }
-
   // Declared before stream_, so the file is open before the stream reads it.
   std::unique_ptr<std::ifstream> file_;
   itch::QuoteStream stream_;
+};
+
+// The same for PassiveSim.
+class PyPassiveSim {
+ public:
+  PyPassiveSim(const std::filesystem::path& path, std::string symbol, itch::Timestamp latency_ns)
+      : file_(open_input(path)), sim_(file_ ? *file_ : std::cin, std::move(symbol), latency_ns) {}
+
+  itch::PassiveSim& sim() { return sim_; }
+  const itch::PassiveSim& sim() const { return sim_; }
+
+ private:
+  std::unique_ptr<std::ifstream> file_;
+  itch::PassiveSim sim_;
 };
 
 }  // namespace
@@ -121,4 +136,49 @@ PYBIND11_MODULE(itchpy, m) {
       .def_property_readonly("malformed", [](const PyQuoteStream& s) { return s.stream().malformed(); })
       .def_property_readonly("book_errors", [](const PyQuoteStream& s) { return s.stream().book_errors(); })
       .def_property_readonly("truncated", [](const PyQuoteStream& s) { return s.stream().truncated(); });
+
+  py::class_<itch::WorkingOrder>(m, "WorkingOrder")
+      .def_readonly("price", &itch::WorkingOrder::price)
+      .def_readonly("shares", &itch::WorkingOrder::shares, "Not yet filled.")
+      .def_readonly("ahead", &itch::WorkingOrder::ahead, "Real shares in front of us at our price.")
+      .def("__repr__", [](const itch::WorkingOrder& w) {
+        return "WorkingOrder(" + price_repr(w.price) + " x " + std::to_string(w.shares) +
+               ", ahead=" + std::to_string(w.ahead) + ")";
+      });
+
+  py::class_<itch::PassiveFill>(m, "PassiveFill")
+      .def_readonly("timestamp", &itch::PassiveFill::timestamp)
+      .def_readonly("side", &itch::PassiveFill::side)
+      .def_readonly("price", &itch::PassiveFill::price)
+      .def_readonly("shares", &itch::PassiveFill::shares)
+      .def("__repr__", [](const itch::PassiveFill& f) {
+        return std::string("PassiveFill(t=") + std::to_string(f.timestamp) + ", " +
+               (f.side == itch::Side::Buy ? "bought " : "sold ") + std::to_string(f.shares) +
+               " @ " + price_repr(f.price) + ")";
+      });
+
+  py::class_<PyPassiveSim>(m, "PassiveSim",
+                           "Replays one symbol and simulates our resting orders in its real queues.")
+      .def(py::init<const std::filesystem::path&, std::string, itch::Timestamp>(), py::arg("path"),
+           py::arg("symbol"), py::arg("latency_ns") = 0)
+      .def("__iter__", [](PyPassiveSim& s) -> PyPassiveSim& { return s; },
+           py::return_value_policy::reference_internal)
+      .def("__next__",
+           [](PyPassiveSim& s) {
+             auto quote = s.sim().next();
+             if (!quote) throw py::stop_iteration();
+             return *quote;
+           })
+      .def("place", [](PyPassiveSim& s, itch::Side side, itch::Price price,
+                       itch::Shares shares) { s.sim().place(side, price, shares); },
+           py::arg("side"), py::arg("price"), py::arg("shares"),
+           "Request our order on `side` to become `shares` at `price` (0 cancels).")
+      .def("take_fills", [](PyPassiveSim& s) { return s.sim().take_fills(); })
+      .def("working", [](const PyPassiveSim& s, itch::Side side) { return s.sim().working(side); },
+           py::arg("side"))
+      .def_property_readonly("now", [](const PyPassiveSim& s) { return s.sim().now(); })
+      .def_property_readonly("rejected", [](const PyPassiveSim& s) { return s.sim().rejected(); })
+      .def_property_readonly("malformed", [](const PyPassiveSim& s) { return s.sim().malformed(); })
+      .def_property_readonly("book_errors", [](const PyPassiveSim& s) { return s.sim().book_errors(); })
+      .def_property_readonly("truncated", [](const PyPassiveSim& s) { return s.sim().truncated(); });
 }

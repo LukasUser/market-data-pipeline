@@ -33,6 +33,7 @@ add_library(itch
   src/market.cpp
   src/matching_engine.cpp
   src/order_book.cpp
+  src/passive_sim.cpp
   src/queue_audit.cpp
   src/quote_stream.cpp
 )
@@ -84,6 +85,7 @@ if(ITCH_BUILD_TESTS)
     tests/test_frame_reader.cpp
     tests/test_matching_engine.cpp
     tests/test_order_book.cpp
+    tests/test_passive_sim.cpp
     tests/test_queue_audit.cpp
     tests/test_quote_stream.cpp
   )

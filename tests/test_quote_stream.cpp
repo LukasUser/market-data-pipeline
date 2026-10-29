@@ -2,13 +2,11 @@
 
 #include <cstdint>
 #include <optional>
-#include <sstream>
-#include <string>
-#include <string_view>
 #include <vector>
 
 #include "bytes.hpp"
 #include "itch/quote_stream.hpp"
+#include "itch_stream.hpp"
 
 namespace itch {
 namespace {
@@ -16,31 +14,7 @@ namespace {
 constexpr std::uint16_t kAapl = 7;
 constexpr std::uint16_t kMsft = 9;
 
-// Builds a length-prefixed ITCH stream one message at a time.
-class Stream {
- public:
-  Stream& add(std::uint16_t locate, Timestamp ts, OrderRef ref, char side, Shares shares,
-              std::string_view stock, Price price) {
-    return frame(test::Bytes().header('A', locate, 0, ts).u64(ref).ch(side).u32(shares).str(stock).u32(price));
-  }
-  Stream& execute(std::uint16_t locate, Timestamp ts, OrderRef ref, Shares shares) {
-    return frame(test::Bytes().header('E', locate, 0, ts).u64(ref).u32(shares).u64(1));
-  }
-  Stream& remove(std::uint16_t locate, Timestamp ts, OrderRef ref) {
-    return frame(test::Bytes().header('D', locate, 0, ts).u64(ref));
-  }
-  Stream& raw(const test::Bytes& bytes) { return frame(bytes); }
-
-  std::istringstream open() const { return std::istringstream(data_); }
-
- private:
-  Stream& frame(const test::Bytes& bytes) {
-    for (std::uint8_t b : bytes.framed()) data_.push_back(static_cast<char>(b));
-    return *this;
-  }
-
-  std::string data_;
-};
+using test::Stream;
 
 std::vector<Quote> all_quotes(QuoteStream& quotes) {
   std::vector<Quote> out;

@@ -10,7 +10,7 @@ import struct
 import tempfile
 import unittest
 
-from itchpy import BookStatus, Level, OrderBook, QuoteStream, Side
+from itchpy import BookStatus, Level, OrderBook, PassiveSim, QuoteStream, Side
 
 AAPL, MSFT = 7, 9
 
@@ -63,13 +63,16 @@ class OrderBookTest(unittest.TestCase):
             OrderBook().add(1, Side.Buy, -1, 100)
 
 
-class QuoteStreamTest(unittest.TestCase):
+class FileTest(unittest.TestCase):
     def write(self, data: bytes) -> pathlib.Path:
         fd, name = tempfile.mkstemp(suffix=".itch")
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         self.addCleanup(os.remove, name)
         return pathlib.Path(name)
+
+
+class QuoteStreamTest(FileTest):
 
     def test_yields_top_of_book_changes_for_one_symbol(self):
         path = self.write(
@@ -102,6 +105,28 @@ class QuoteStreamTest(unittest.TestCase):
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
             QuoteStream("/no/such/file.itch", "AAPL")
+
+
+class PassiveSimTest(FileTest):
+    def test_our_order_fills_when_an_order_behind_it_executes(self):
+        path = self.write(
+            add(AAPL, 1, 1, b"B", 100, "AAPL", 1834500)
+            + add(AAPL, 2, 2, b"S", 100, "AAPL", 1834600)
+            + add(AAPL, 3, 3, b"B", 50, "AAPL", 1834500)  # joins behind us
+            + execute(AAPL, 4, 3, 50)  # a seller reached past us
+        )
+        sim = PassiveSim(path, "AAPL")
+        quotes = iter(sim)
+        next(quotes), next(quotes)  # the book: 183.45 bid, 183.46 ask
+        sim.place(Side.Buy, 1834500, 100)
+        list(quotes)
+
+        [fill] = sim.take_fills()
+        self.assertEqual((fill.timestamp, fill.side, fill.price, fill.shares), (4, Side.Buy, 1834500, 50))
+        working = sim.working(Side.Buy)
+        self.assertEqual((working.price, working.shares, working.ahead), (1834500, 50, 100))
+        self.assertIsNone(sim.working(Side.Sell))
+        self.assertEqual((sim.rejected, sim.book_errors), (0, 0))
 
 
 if __name__ == "__main__":

@@ -2,18 +2,9 @@
 
 #include <variant>
 
+#include "itch/overloaded.hpp"
+
 namespace itch {
-namespace {
-
-// Lets std::visit take one lambda per message type.
-template <typename... Fs>
-struct Overloaded : Fs... {
-  using Fs::operator()...;
-};
-template <typename... Fs>
-Overloaded(Fs...) -> Overloaded<Fs...>;
-
-}  // namespace
 
 BookStatus Market::apply(const Message& message) {
   return std::visit(
