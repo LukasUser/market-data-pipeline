@@ -175,7 +175,10 @@ TEST(MatchingEngine, RandomOrderFlowKeepsTheBookConsistent) {
     ASSERT_EQ(resting_shares(engine), expected_resting) << "after order " << ref;
     const auto bid = engine.best_bid();
     const auto ask = engine.best_ask();
-    if (bid && ask) ASSERT_LT(bid->price, ask->price) << "crossed after order " << ref;
+    // Braces needed: ASSERT_LT expands to its own if/else (GCC -Wdangling-else).
+    if (bid && ask) {
+      ASSERT_LT(bid->price, ask->price) << "crossed after order " << ref;
+    }
   }
   EXPECT_GT(engine.order_count(), 0u);
 }
