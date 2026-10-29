@@ -68,6 +68,9 @@ class MatchingEngine {
   // Order references at one price, front of the queue first.
   std::vector<OrderRef> queue(Side side, Price price) const;
 
+  // Total shares resting at one price.
+  Shares shares_at(Side side, Price price) const;
+
   std::optional<Level> best_bid() const;
   std::optional<Level> best_ask() const;
   std::vector<Level> bids(std::size_t depth) const;
@@ -112,5 +115,10 @@ class MatchingEngine {
   Bids bids_;
   Asks asks_;
 };
+
+// Applies one ITCH book message to an engine as a feed replay. Adds rest
+// without matching, because the exchange reports its own trades as
+// executions; a replace loses priority and keeps the original's side.
+BookStatus replay(MatchingEngine& engine, const Message& message);
 
 }  // namespace itch

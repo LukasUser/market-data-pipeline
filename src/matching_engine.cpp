@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <iterator>
+#include <variant>
+
+#include "itch/overloaded.hpp"
 
 namespace itch {
 
@@ -158,9 +161,39 @@ std::vector<OrderRef> MatchingEngine::queue(Side side, Price price) const {
   return refs;
 }
 
+Shares MatchingEngine::shares_at(Side side, Price price) const {
+  const auto total = [price](const auto& levels) -> Shares {
+    const auto it = levels.find(price);
+    return it == levels.end() ? 0 : it->second.total;
+  };
+  return side == Side::Buy ? total(bids_) : total(asks_);
+}
+
 std::optional<Level> MatchingEngine::best_bid() const { return best(bids_); }
 std::optional<Level> MatchingEngine::best_ask() const { return best(asks_); }
 std::vector<Level> MatchingEngine::bids(std::size_t depth) const { return top(bids_, depth); }
 std::vector<Level> MatchingEngine::asks(std::size_t depth) const { return top(asks_, depth); }
+
+BookStatus replay(MatchingEngine& engine, const Message& message) {
+  return std::visit(
+      Overloaded{
+          [&](const AddOrder& m) { return engine.add(m.order_ref, m.side, m.price, m.shares); },
+          [&](const OrderExecuted& m) { return engine.reduce(m.order_ref, m.executed_shares); },
+          [&](const OrderExecutedWithPrice& m) {
+            return engine.reduce(m.order_ref, m.executed_shares);
+          },
+          [&](const OrderCancel& m) { return engine.reduce(m.order_ref, m.cancelled_shares); },
+          [&](const OrderDelete& m) {
+            return engine.cancel(m.order_ref) ? BookStatus::Ok : BookStatus::UnknownOrder;
+          },
+          [&](const OrderReplace& m) {
+            const auto original = engine.order(m.original_order_ref);
+            if (!original) return BookStatus::UnknownOrder;
+            engine.cancel(m.original_order_ref);
+            return engine.add(m.new_order_ref, original->side, m.price, m.shares);
+          },
+      },
+      message);
+}
 
 }  // namespace itch

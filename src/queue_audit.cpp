@@ -2,19 +2,14 @@
 
 #include <variant>
 
+#include "itch/overloaded.hpp"
+
 namespace itch {
 namespace {
 
 constexpr Timestamp kNanosPerSecond = 1'000'000'000;
 constexpr Timestamp kOpen = (9 * 3600 + 30 * 60) * kNanosPerSecond;
 constexpr Timestamp kClose = 16 * 3600 * kNanosPerSecond;
-
-template <typename... Fs>
-struct Overloaded : Fs... {
-  using Fs::operator()...;
-};
-template <typename... Fs>
-Overloaded(Fs...) -> Overloaded<Fs...>;
 
 Session session_at(Timestamp t) {
   if (t < kOpen) return Session::PreMarket;
