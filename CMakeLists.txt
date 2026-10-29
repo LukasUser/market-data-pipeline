@@ -33,6 +33,7 @@ add_library(itch
   src/market.cpp
   src/matching_engine.cpp
   src/order_book.cpp
+  src/queue_audit.cpp
   src/quote_stream.cpp
 )
 target_include_directories(itch PUBLIC include)
@@ -45,6 +46,9 @@ target_link_libraries(itch_stats PRIVATE itch itch_warnings)
 
 add_executable(itch_book tools/itch_book.cpp)
 target_link_libraries(itch_book PRIVATE itch itch_warnings)
+
+add_executable(itch_queue tools/itch_queue.cpp)
+target_link_libraries(itch_queue PRIVATE itch itch_warnings)
 
 # A Python interpreter can't load a module built with ASan unless the
 # interpreter itself was, so sanitizer builds skip the bindings.
@@ -80,6 +84,7 @@ if(ITCH_BUILD_TESTS)
     tests/test_frame_reader.cpp
     tests/test_matching_engine.cpp
     tests/test_order_book.cpp
+    tests/test_queue_audit.cpp
     tests/test_quote_stream.cpp
   )
   target_link_libraries(itch_tests PRIVATE itch itch_warnings GTest::gtest_main)

@@ -123,6 +123,17 @@ TEST(MatchingEngine, ReferenceCanBeReusedOnceTheOrderHasFilled) {
   EXPECT_EQ(engine.submit(X, Side::Buy, kBid, 10).status, BookStatus::Ok);
 }
 
+TEST(MatchingEngine, AddRestsWithoutMatching) {
+  MatchingEngine engine;
+  engine.submit(A, Side::Buy, kBid, 100);
+  EXPECT_EQ(engine.add(B, Side::Sell, kBid, 50), BookStatus::Ok);  // would have traded
+
+  EXPECT_EQ(engine.best_bid(), (Level{kBid, 100}));
+  EXPECT_EQ(engine.best_ask(), (Level{kBid, 50}));  // crossed, as replayed
+  EXPECT_EQ(engine.order(B), (OrderState{Side::Sell, kBid, 50}));
+  EXPECT_EQ(engine.add(B, Side::Sell, kAsk, 10), BookStatus::DuplicateOrder);
+}
+
 std::uint64_t resting_shares(const MatchingEngine& engine) {
   const auto sum = [](std::uint64_t total, const Level& l) { return total + l.shares; };
   const auto bids = engine.bids(SIZE_MAX);

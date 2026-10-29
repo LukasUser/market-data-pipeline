@@ -39,21 +39,27 @@ Submitted MatchingEngine::submit(OrderRef ref, Side side, Price limit, Shares sh
   } else {
     match(bids_, ref, remaining, [limit](Price bid) { return bid >= limit; }, result.trades);
   }
-  if (remaining == 0) return result;
-
   // What's left rests at the back of the queue at its limit price.
+  if (remaining > 0) add(ref, side, limit, remaining);
+  return result;
+}
+
+BookStatus MatchingEngine::add(OrderRef ref, Side side, Price price, Shares shares) {
+  if (index_.contains(ref)) return BookStatus::DuplicateOrder;
+  if (shares == 0) return BookStatus::Ok;  // nothing to rest, as in OrderBook
+
   const auto rest = [&](auto& levels) {
-    PriceLevel& level = levels[limit];
-    level.orders.push_back({ref, remaining});
-    level.total += remaining;
-    index_.emplace(ref, Locator{side, limit, std::prev(level.orders.end())});
+    PriceLevel& level = levels[price];
+    level.orders.push_back({ref, shares});
+    level.total += shares;
+    index_.emplace(ref, Locator{side, price, std::prev(level.orders.end())});
   };
   if (side == Side::Buy) {
     rest(bids_);
   } else {
     rest(asks_);
   }
-  return result;
+  return BookStatus::Ok;
 }
 
 // Trades `remaining` shares of an incoming order against the opposite side:
@@ -118,6 +124,13 @@ void MatchingEngine::erase(const Locator& where) {
   } else {
     remove(asks_);
   }
+}
+
+std::optional<OrderState> MatchingEngine::order(OrderRef ref) const {
+  const auto it = index_.find(ref);
+  if (it == index_.end()) return std::nullopt;
+  const Locator& where = it->second;
+  return OrderState{where.side, where.price, where.position->shares};
 }
 
 std::optional<Shares> MatchingEngine::shares_ahead(OrderRef ref) const {

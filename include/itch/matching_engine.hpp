@@ -22,6 +22,14 @@ struct Trade {
   friend bool operator==(const Trade&, const Trade&) = default;
 };
 
+struct OrderState {
+  Side side;
+  Price price;
+  Shares shares;  // Still resting.
+
+  friend bool operator==(const OrderState&, const OrderState&) = default;
+};
+
 struct Submitted {
   BookStatus status;          // Ok, or DuplicateOrder (nothing traded or rested).
   std::vector<Trade> trades;  // In the order they happened.
@@ -38,12 +46,20 @@ class MatchingEngine {
  public:
   Submitted submit(OrderRef ref, Side side, Price limit, Shares shares);
 
+  // Rests an order at the back of its price's queue without matching it, for
+  // replaying a feed where the exchange has already decided what trades. The
+  // book can then be crossed (e.g. during a halt or before an auction).
+  BookStatus add(OrderRef ref, Side side, Price price, Shares shares);
+
   // Removes a resting order. False if it isn't resting.
   bool cancel(OrderRef ref);
 
   // Takes shares off a resting order without losing its place in the queue
   // (an ITCH partial cancel). The order leaves the book at zero.
   BookStatus reduce(OrderRef ref, Shares shares);
+
+  // A resting order's side, price and remaining shares, or nullopt.
+  std::optional<OrderState> order(OrderRef ref) const;
 
   // Shares resting ahead of an order at its price, or nullopt if it isn't
   // resting. These must all trade or cancel before it can fill.
