@@ -9,9 +9,9 @@ TotalView-ITCH 5.0, with Python bindings for research.
 2. **Order book** (done): rebuilds every instrument's book from those messages.
 3. **Python quotes** (done): one symbol's top-of-book changes, streamed into Python.
 4. **Backtester** (done): event-driven, with latency, fees and an imbalance study.
-5. **Matching engine** (in progress): price-time priority with per-order queues.
-   Next: check its queues against NASDAQ's own executions, then use queue
-   position to backtest resting orders.
+5. **Matching engine** (done): price-time priority with per-order queues,
+   validated against a full day of NASDAQ executions.
+6. **Resting-order backtest** (next): use queue position to earn the spread.
 
 ## Feed handler
 
@@ -136,6 +136,44 @@ Besides worked examples, a randomized test runs 20,000 orders and cancels and
 checks after each one that the book isn't crossed and that no shares appear
 or vanish.
 
+### Validation: does our queue order match NASDAQ's?
+
+`QueueAudit` (`tools/itch_queue`) replays a full day through one
+`MatchingEngine` per stock. For every execution NASDAQ reports, it records
+where that order stood in our queue just before: at the front of the best
+price (what price-time priority predicts), behind other orders at that price,
+behind a better price, or unknown to us.
+
+Replay uses `add`, not `submit`: NASDAQ decides what trades and reports it as
+executions, so the engine must not match orders itself. A first version
+used `submit`, and 957 orders that NASDAQ accepted while crossing the book
+(halts, auctions) traded inside our engine, leaving 1,821 later messages
+referring to orders we had removed. With `add`, 2,630 crossing orders rest as
+reported and every message applies cleanly.
+
+2019-12-30, all 8,892 instruments:
+
+| Execution | Count | Front of queue | Behind in queue | Behind on price | Unknown |
+|---|---|---|---|---|---|
+| `E` before 09:30 | 28,752 | 100.00% | 0 | 0 | 0 |
+| `E` 09:30–16:00 | 5,683,179 | **99.81%** | 10,565 (0.19%) | 0 | 0 |
+| `E` after 16:00 | 10,893 | 100.00% | 0 | 0 | 0 |
+| `C` 09:30–16:00 | 97,299 | 15.09% | 84.63% | 0.28% | 0 |
+| `C` after 16:00 | 2,617 | 98.89% | 1.11% | 0 | 0 |
+
+Book errors 0, resting orders at end of day 0.
+
+- **Continuous trading follows our queues.** 99.81% of regular-hours `E`
+  executions hit the front of the best price, and none hit a worse price.
+- **`C` executions mostly don't, as expected.** They are executions at a
+  price other than the order's own, mainly the opening cross, which fills
+  orders by auction rules rather than continuous queue order.
+- **The 0.19% isn't explained yet.** It isn't the opening cross (34 of the
+  10,565 fall in 09:30:00), it is spread over 1,052 seconds and 436 stocks,
+  heaviest in the busiest names (MSFT 1,075, AAPL 651, TSLA 572). It isn't
+  replaces either: replaced orders were front of queue in all 345,214 of
+  their executions; every out-of-queue execution was on a freshly added order.
+
 ## Layout
 
 - `include/itch/messages.hpp`: decoded message structs and `Message` variant
@@ -144,6 +182,7 @@ or vanish.
 - `include/itch/order_book.hpp`: one instrument's book (orders + price levels)
 - `include/itch/market.hpp`: routes messages to one book per instrument
 - `include/itch/matching_engine.hpp`: price-time priority matching with per-order queues
+- `include/itch/queue_audit.hpp`: checks NASDAQ's executions against the engine's queues
 - `include/itch/quote_stream.hpp`: one symbol's top-of-book changes from a stream
 - `python/itchpy.cpp`: pybind11 bindings
 - `python/tests/`: Python tests (`unittest`), run by `ctest`
@@ -152,6 +191,7 @@ or vanish.
 - `python/examples/imbalance.py`: does imbalance predict the next move, and does it pay?
 - `tools/itch_stats.cpp`: counts messages by type and measures throughput
 - `tools/itch_book.cpp`: replays a file and prints one symbol's book
+- `tools/itch_queue.cpp`: queue audit over a whole file
 - `tests/`: GoogleTest suite; byte layouts are written from the spec, not from the decoder
 
 ## Build & test
@@ -262,7 +302,6 @@ consolidated quote across all exchanges, so it is wider than AAPL's NBBO.
 1. Speed up the book: a flat hash map with reserved capacity for orders, and a
    cheaper price-level structure. Benchmark before and after.
 2. Validate executions against trade prints / daily volume.
-3. Replay ITCH through `MatchingEngine` and check that every execution hits
-   the order at the front of its queue.
+3. Explain the 0.19% of regular-hours executions that skip ahead of our queue.
 4. Backtest resting orders using queue position: earn the spread instead of
    paying it.
