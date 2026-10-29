@@ -36,6 +36,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Headers for building the itchpy module (skipped in sanitizer builds).
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Configure
         run: >
           cmake -S . -B build

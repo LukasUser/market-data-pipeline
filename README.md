@@ -3,11 +3,12 @@
 [![CI](https://github.com/LukasUser/market-data-pipeline/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/LukasUser/market-data-pipeline/actions/workflows/ci.yml)
 
 A C++20 market data → order book → strategy pipeline, built on NASDAQ
-TotalView-ITCH 5.0.
+TotalView-ITCH 5.0, with Python bindings for research.
 
 1. **Feed handler** (done): decodes ITCH messages from NASDAQ's sample files.
 2. **Order book** (done): rebuilds every instrument's book from those messages.
-3. **Strategy and backtester** (next).
+3. **Python quotes** (done): one symbol's top-of-book changes, streamed into Python.
+4. **Strategy and backtester** (next).
 
 ## Feed handler
 
@@ -40,6 +41,25 @@ to the right book using the stock locate code in its header.
 Anything inconsistent (an unknown or reused order reference, or removing more
 shares than are resting) is reported as a `BookStatus`, not silently skipped.
 
+## Python
+
+`itchpy` is a pybind11 module over the C++ book. `QuoteStream` replays a file
+in C++ and yields a `Quote` each time one symbol's best bid or best ask changes
+(price or size); Python only sees those changes, not every message.
+
+```python
+from itchpy import QuoteStream
+
+stream = QuoteStream("12302019.NASDAQ_ITCH50", "AAPL")  # or "-" for stdin
+for q in stream:
+    q.timestamp            # nanoseconds since midnight
+    q.bid, q.ask           # Level(price, shares), or None if that side is empty
+stream.book.bids(5)        # full depth as of the last quote
+```
+
+`OrderBook`, `Level`, `Side` and `BookStatus` are exposed too. Prices stay as
+fixed-point integers (4 implied decimals) on the Python side as well.
+
 ## Layout
 
 - `include/itch/messages.hpp`: decoded message structs and `Message` variant
@@ -47,6 +67,10 @@ shares than are resting) is reported as a `BookStatus`, not silently skipped.
 - `include/itch/frame_reader.hpp`: splits the 2-byte length-prefixed file format
 - `include/itch/order_book.hpp`: one instrument's book (orders + price levels)
 - `include/itch/market.hpp`: routes messages to one book per instrument
+- `include/itch/quote_stream.hpp`: one symbol's top-of-book changes from a stream
+- `python/itchpy.cpp`: pybind11 bindings
+- `python/tests/`: Python tests (`unittest`), run by `ctest`
+- `python/examples/spread.py`: time-weighted bid-ask spread for a symbol
 - `tools/itch_stats.cpp`: counts messages by type and measures throughput
 - `tools/itch_book.cpp`: replays a file and prints one symbol's book
 - `tests/`: GoogleTest suite; byte layouts are written from the spec, not from the decoder
@@ -60,7 +84,14 @@ cmake --build build && ./build/itch_tests
 # With AddressSanitizer + UndefinedBehaviorSanitizer
 cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DITCH_SANITIZE=ON
 cmake --build build-asan && ./build-asan/itch_tests
+
+# Everything, including the Python tests (needs Python 3.10+ with headers)
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release && ctest --test-dir build-release
 ```
+
+Sanitizer builds skip the Python module: a normal Python interpreter can't load
+an ASan-instrumented extension. Pass `-DITCH_BUILD_PYTHON=OFF` to skip it elsewhere.
 
 CI runs both configurations (Release, and Debug with ASan+UBSan) with GCC and
 Clang on Linux and Apple Clang on macOS. See `.github/workflows/ci.yml`.
@@ -96,6 +127,11 @@ gunzip -c 12302019.NASDAQ_ITCH50.gz | ./build-release/itch_book - AAPL 12:00:00
   asks lowest-first, so the best price on either side is always `begin()`.
   A level stores the total shares at that price, not the individual orders;
   per-order queue position will matter for the matching engine, not here.
+- **Thin bindings.** All replay logic is in C++ (`QuoteStream`), tested by
+  GoogleTest and the sanitizers; `itchpy.cpp` only converts types.
+- **One symbol at a time in `QuoteStream`.** The symbol's locate code comes
+  from its first Add Order, and messages for every other locate are decoded
+  but never applied, so following one stock costs little more than decoding.
 - **Routing by stock locate.** Every ITCH message header carries the
   instrument's locate code, so `Market` keeps one independent book per
   instrument without a global order index.
@@ -128,9 +164,23 @@ Decoding alone took 125.8 s through `gunzip`, so the book is now the
 bottleneck: one heap allocation per order in `std::unordered_map` and per
 price level in `std::map`.
 
+AAPL quotes into Python (`python/examples/spread.py`, piped through `gunzip`):
+
+| Check | Result |
+|---|---|
+| Top-of-book changes yielded to Python | 424,660 |
+| Time | 129.2 s (`gunzip`-bound; decoding alone took 125.8 s) |
+| Time-weighted spread, 09:30–16:00 | $0.0264 |
+| Share of the session at a one-cent spread | 12.9% |
+| Malformed / book errors / truncated | 0 / 0 / no |
+
+Applying only AAPL's messages makes this faster than `itch_book`, which
+rebuilds all 8,892 books. The spread is NASDAQ's own book, not the
+consolidated quote across all exchanges, so it is wider than AAPL's NBBO.
+
 ## Next
 
 1. Speed up the book: a flat hash map with reserved capacity for orders, and a
    cheaper price-level structure. Benchmark before and after.
 2. Validate executions against trade prints / daily volume.
-3. Strategy and backtester on top of `Market`.
+3. Strategy and backtester in Python on top of `QuoteStream`.
