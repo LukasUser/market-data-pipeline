@@ -65,6 +65,9 @@ class ImbalanceAware(JoinBest):
         return bid, ask
 
 
+STRATEGIES = {"join": JoinBest, "imbalance": ImbalanceAware}
+
+
 @dataclass
 class MarketMakingResult:
     fills: list  # (timestamp, signed shares, price)

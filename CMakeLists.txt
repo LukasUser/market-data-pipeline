@@ -36,6 +36,7 @@ add_library(itch
   src/passive_sim.cpp
   src/queue_audit.cpp
   src/quote_stream.cpp
+  src/symbol_splitter.cpp
 )
 target_include_directories(itch PUBLIC include)
 target_link_libraries(itch PRIVATE itch_warnings)
@@ -50,6 +51,12 @@ target_link_libraries(itch_book PRIVATE itch itch_warnings)
 
 add_executable(itch_queue tools/itch_queue.cpp)
 target_link_libraries(itch_queue PRIVATE itch itch_warnings)
+
+add_executable(itch_rank tools/itch_rank.cpp)
+target_link_libraries(itch_rank PRIVATE itch itch_warnings)
+
+add_executable(itch_split tools/itch_split.cpp)
+target_link_libraries(itch_split PRIVATE itch itch_warnings)
 
 # A Python interpreter can't load a module built with ASan unless the
 # interpreter itself was, so sanitizer builds skip the bindings.
@@ -88,6 +95,7 @@ if(ITCH_BUILD_TESTS)
     tests/test_passive_sim.cpp
     tests/test_queue_audit.cpp
     tests/test_quote_stream.cpp
+    tests/test_symbol_splitter.cpp
   )
   target_link_libraries(itch_tests PRIVATE itch itch_warnings GTest::gtest_main)
   include(GoogleTest)

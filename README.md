@@ -12,7 +12,8 @@ TotalView-ITCH 5.0, with Python bindings for research.
 5. **Matching engine** (done): price-time priority with per-order queues,
    validated against a full day of NASDAQ executions.
 6. **Resting-order backtest** (done): market making in NASDAQ's real queues.
-7. **Many days and symbols in parallel** (next).
+7. **Many symbols in parallel** (done): split once, fan out jobs across cores.
+8. **More days and a research write-up** (next).
 
 ## Feed handler
 
@@ -222,6 +223,55 @@ before fees (see Backtester).
 - **Latency hurts.** At 1 ms, quotes go stale: 1,466 requests arrive after the
   market has moved through them, and spread captured falls from 1.02¢ to 0.44¢.
 
+## Many symbols in parallel
+
+Every per-symbol tool skips other symbols' messages, so each job only needs
+its own symbol's data. Two stages:
+
+1. **Partition once.** `itch_rank` lists symbols by book messages;
+   `itch_split` makes one pass over the day and writes each chosen symbol's
+   book messages to `<SYMBOL>.itch` in the same format.
+2. **Fan out.** `python/runner.py` runs one job per (symbol, strategy,
+   latency) in a process pool. Each result is appended to a JSON Lines file as
+   it finishes; a re-run skips recorded jobs, so an interrupted run resumes
+   where it stopped. A job that raises is recorded with its error, doesn't stop
+   the others, and is retried on the next run.
+
+```bash
+gunzip -c 12302019.NASDAQ_ITCH50.gz | ./build-release/itch_rank - 100 > top100.tsv
+gunzip -c 12302019.NASDAQ_ITCH50.gz | ./build-release/itch_split - day/ $(cut -f1 top100.tsv)
+PYTHONPATH=build-release:python python3 python/runner.py day/ results.jsonl \
+    --strategies join,imbalance --latencies 10,1000 --workers 4
+```
+
+The 100 busiest symbols are 23% of the day's messages (1.8 GB split). AAPL's
+split file gives a result identical to the full-day replay, in 2.8 s instead
+of 133 s. All 400 jobs took 1,282 CPU-seconds; on the full file they would
+have taken about 15 hours.
+
+### Result: 100 symbols, 2019-12-30
+
+Market making, 100 shares a side, |position| ≤ 500, $0.0020/share rebate.
+Per share filled, weighted by shares:
+
+| Strategy | Latency | Shares filled | Spread captured | Markout 1 s | PnL | Symbols that made money |
+|---|---|---|---|---|---|---|
+| Join best | 10 µs | 15.5M | +0.73¢ | −0.99¢ | −0.23¢ (−$35,028) | 39 of 100 |
+| Imbalance-aware | 10 µs | 3.8M | +1.13¢ | −1.30¢ | −0.38¢ (−$14,638) | 51 of 100 |
+| Join best | 1 ms | 29.6M | +0.30¢ | −0.64¢ | −0.32¢ (−$94,870) | 16 of 100 |
+| Imbalance-aware | 1 ms | 9.2M | +0.45¢ | −0.88¢ | −0.68¢ (−$61,953) | 43 of 100 |
+
+- **The AAPL result generalises:** across 100 symbols, adverse selection
+  outweighs the spread captured, though by less than for AAPL alone.
+- **Latency hurts everywhere:** at 1 ms, spread captured falls by more than
+  half and only 16 of 100 symbols make money with the join strategy.
+- **Losses concentrate in high-priced, fast-moving stocks.** AMZN (−$15,067),
+  TSLA and AAPL are the worst at 10 µs. A fixed 100 shares is far more money at
+  risk in a $1,850 stock than in a $20 one, so cents per share isn't a fair
+  comparison across prices; basis points of notional would be.
+- **One day is noisy.** GOOGL is the best symbol (+$4,248) while GOOG, the
+  same company's other share class, loses $2,136.
+
 ## Layout
 
 - `include/itch/messages.hpp`: decoded message structs and `Message` variant
@@ -232,6 +282,7 @@ before fees (see Backtester).
 - `include/itch/matching_engine.hpp`: price-time priority matching with per-order queues
 - `include/itch/queue_audit.hpp`: checks NASDAQ's executions against the engine's queues
 - `include/itch/passive_sim.hpp`: our resting orders simulated in the real queues
+- `include/itch/symbol_splitter.hpp`: copies chosen symbols' book messages to one stream each
 - `include/itch/quote_stream.hpp`: one symbol's top-of-book changes from a stream
 - `python/itchpy.cpp`: pybind11 bindings
 - `python/tests/`: Python tests (`unittest`), run by `ctest`
@@ -240,9 +291,11 @@ before fees (see Backtester).
 - `python/examples/imbalance.py`: does imbalance predict the next move, and does it pay?
 - `python/market_making.py`: market-making loop, PnL attribution, strategies
 - `python/examples/make_markets.py`: runs a market-making strategy over a day
+- `python/runner.py`: parallel, resumable job runner over split files
 - `tools/itch_stats.cpp`: counts messages by type and measures throughput
 - `tools/itch_book.cpp`: replays a file and prints one symbol's book
 - `tools/itch_queue.cpp`: queue audit over a whole file
+- `tools/itch_rank.cpp`, `tools/itch_split.cpp`: rank symbols by activity; split a day by symbol
 - `tests/`: GoogleTest suite; byte layouts are written from the spec, not from the decoder
 
 ## Build & test
@@ -356,4 +409,5 @@ consolidated quote across all exchanges, so it is wider than AAPL's NBBO.
 3. Explain the 0.19% of regular-hours executions that skip ahead of our queue.
 4. Measure markout by queue position at the moment of the fill, to test whether
    fills from the front of the queue are less adversely selected.
-5. Run many days and symbols in parallel, so results aren't one stock on one day.
+5. Run more days (NASDAQ publishes several sample days) and report results in
+   basis points of notional, so prices are comparable.
