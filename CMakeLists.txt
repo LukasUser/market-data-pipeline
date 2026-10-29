@@ -27,12 +27,17 @@ target_compile_options(itch_warnings INTERFACE -Wall -Wextra -Wpedantic -Wconver
 add_library(itch
   src/decoder.cpp
   src/frame_reader.cpp
+  src/market.cpp
+  src/order_book.cpp
 )
 target_include_directories(itch PUBLIC include)
 target_link_libraries(itch PRIVATE itch_warnings)
 
 add_executable(itch_stats tools/itch_stats.cpp)
 target_link_libraries(itch_stats PRIVATE itch itch_warnings)
+
+add_executable(itch_book tools/itch_book.cpp)
+target_link_libraries(itch_book PRIVATE itch itch_warnings)
 
 if(ITCH_BUILD_TESTS)
   include(FetchContent)
@@ -51,6 +56,7 @@ if(ITCH_BUILD_TESTS)
   add_executable(itch_tests
     tests/test_decoder.cpp
     tests/test_frame_reader.cpp
+    tests/test_order_book.cpp
   )
   target_link_libraries(itch_tests PRIVATE itch itch_warnings GTest::gtest_main)
   include(GoogleTest)
