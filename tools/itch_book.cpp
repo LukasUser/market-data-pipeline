@@ -130,8 +130,10 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    const itch::Header& header =
-        std::visit([](const auto& m) -> const itch::Header& { return m.header; }, result.message);
+    // Copied rather than referenced: it's 16 bytes, and GCC's dangling-reference
+    // check can't tell a reference returned through std::visit is safe.
+    const itch::Header header =
+        std::visit([](const auto& m) { return m.header; }, result.message);
 
     if (!snapshot_done && header.timestamp >= *snapshot_at) {
       print_snapshot(market, target, symbol, format_time(*snapshot_at));
