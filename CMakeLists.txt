@@ -88,6 +88,8 @@ if(ITCH_BUILD_TESTS)
     add_test(NAME python_tests
              COMMAND Python::Interpreter -m unittest discover -v
                      -s ${CMAKE_CURRENT_SOURCE_DIR}/python/tests)
-    set_tests_properties(python_tests PROPERTIES ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:itchpy>")
+    # The compiled itchpy module, and the pure-Python modules beside the tests.
+    set_tests_properties(python_tests PROPERTIES ENVIRONMENT
+                         "PYTHONPATH=$<TARGET_FILE_DIR:itchpy>:${CMAKE_CURRENT_SOURCE_DIR}/python")
   endif()
 endif()
