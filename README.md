@@ -8,7 +8,8 @@ TotalView-ITCH 5.0, with Python bindings for research.
 1. **Feed handler** (done): decodes ITCH messages from NASDAQ's sample files.
 2. **Order book** (done): rebuilds every instrument's book from those messages.
 3. **Python quotes** (done): one symbol's top-of-book changes, streamed into Python.
-4. **Strategy and backtester** (next).
+4. **Backtester** (done): event-driven, with latency, fees and an imbalance study.
+5. **Matching engine** (next): queue position, so passive orders can be simulated.
 
 ## Feed handler
 
@@ -60,6 +61,53 @@ stream.book.bids(5)        # full depth as of the last quote
 `OrderBook`, `Level`, `Side` and `BookStatus` are exposed too. Prices stay as
 fixed-point integers (4 implied decimals) on the Python side as well.
 
+## Backtester
+
+`python/backtest.py` is a small event-driven backtester. Each quote goes to a
+`Strategy`, which returns the position it wants to hold; any change becomes a
+market order.
+
+- **Fills cross the spread.** Buys pay the ask, sells receive the bid.
+- **Latency.** An order arrives `latency_ns` after the quote that triggered it
+  and fills against the book *as it stands at arrival*. Filling at the quote
+  the strategy reacted to is lookahead: that price may already be gone.
+- **Exact cash.** Cash stays in fixed-point integers; drawdown is marked to mid.
+- **Session only.** Trading runs 09:30–16:00 and any position is closed at 16:00.
+- **Stated simplifications.** Orders fill in full at the best price and don't
+  move the market; one order is in flight at a time.
+
+### Result: imbalance predicts direction, but doesn't pay to cross the spread
+
+AAPL, 2019-12-30, 09:30–16:00 (`python/examples/imbalance.py`).
+Imbalance = bid shares / (bid shares + ask shares) at the top of book.
+
+| Imbalance | Quotes | Next mid move is up |
+|---|---|---|
+| 0.0–0.2 | 51,169 | 37.3% |
+| 0.2–0.4 | 96,238 | 40.2% |
+| 0.4–0.6 | 120,252 | 49.5% |
+| 0.6–0.8 | 100,168 | 59.0% |
+| 0.8–1.0 | 54,468 | 63.9% |
+
+Trading it with 100-share market orders (long above the threshold, short below
+1 − threshold, flat in between):
+
+| Strategy | Trades | PnL | Per share traded |
+|---|---|---|---|
+| Never trade | 0 | $0 | – |
+| Threshold 0.8, no latency, no fees | 79,717 | −$110,586 | −1.36¢ |
+| Threshold 0.8, 10 µs latency | 78,394 | −$108,465 | −1.36¢ |
+| … plus $0.003/share taker fee | 78,394 | −$132,449 | −1.66¢ |
+| Threshold 0.9, 10 µs, fee | 39,283 | −$62,987 | −1.59¢ |
+
+The signal is real (37% → 64% up across the buckets) but small: it says which
+way the next tick goes, not that it will go far. Each market order pays about
+half the 2.6¢ average spread, and the loss per share traded is almost exactly
+that, so the prediction earns close to nothing net of the spread. A strategy
+using this signal would have to *earn* the spread with resting orders instead
+of paying it, which is why the matching engine is next. One stock on one day
+is a single sample, not proof.
+
 ## Layout
 
 - `include/itch/messages.hpp`: decoded message structs and `Message` variant
@@ -71,6 +119,8 @@ fixed-point integers (4 implied decimals) on the Python side as well.
 - `python/itchpy.cpp`: pybind11 bindings
 - `python/tests/`: Python tests (`unittest`), run by `ctest`
 - `python/examples/spread.py`: time-weighted bid-ask spread for a symbol
+- `python/backtest.py`: event-driven backtester, strategies, imbalance study
+- `python/examples/imbalance.py`: does imbalance predict the next move, and does it pay?
 - `tools/itch_stats.cpp`: counts messages by type and measures throughput
 - `tools/itch_book.cpp`: replays a file and prints one symbol's book
 - `tests/`: GoogleTest suite; byte layouts are written from the spec, not from the decoder
@@ -183,4 +233,5 @@ consolidated quote across all exchanges, so it is wider than AAPL's NBBO.
 1. Speed up the book: a flat hash map with reserved capacity for orders, and a
    cheaper price-level structure. Benchmark before and after.
 2. Validate executions against trade prints / daily volume.
-3. Strategy and backtester in Python on top of `QuoteStream`.
+3. Matching engine with per-order queues, so the backtester can simulate
+   passive (resting) orders, not only market orders.
