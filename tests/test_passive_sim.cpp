@@ -46,6 +46,9 @@ TEST(PassiveSim, JoinsBehindEveryShareAlreadyAtItsPrice) {
 
   EXPECT_EQ(sim.working(Side::Buy), (WorkingOrder{kBid, 100, 300}));
   EXPECT_TRUE(sim.take_fills().empty());
+  // The market's own depth: our order isn't part of it.
+  EXPECT_EQ(sim.bids(5), (std::vector<Level>{{kBid, 350}}));
+  EXPECT_EQ(sim.asks(5), (std::vector<Level>{{kAsk, 100}}));
 }
 
 TEST(PassiveSim, ExecutionsAheadMoveUsUpAndExecutionsBehindFillUs) {

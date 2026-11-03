@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <istream>
@@ -62,6 +63,10 @@ class PassiveSim {
 
   std::vector<PassiveFill> take_fills();
   std::optional<WorkingOrder> working(Side side) const;
+
+  // The market's own book (without our orders), best price first.
+  std::vector<Level> bids(std::size_t depth) const { return engine_.bids(depth); }
+  std::vector<Level> asks(std::size_t depth) const { return engine_.asks(depth); }
 
   Timestamp now() const { return now_; }
   std::uint64_t rejected() const { return rejected_; }
