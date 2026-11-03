@@ -176,6 +176,10 @@ PYBIND11_MODULE(itchpy, m) {
       .def("take_fills", [](PyPassiveSim& s) { return s.sim().take_fills(); })
       .def("working", [](const PyPassiveSim& s, itch::Side side) { return s.sim().working(side); },
            py::arg("side"))
+      .def("bids", [](const PyPassiveSim& s, std::size_t depth) { return s.sim().bids(depth); },
+           py::arg("depth") = 5, "The market's bids, best first (our orders aren't included).")
+      .def("asks", [](const PyPassiveSim& s, std::size_t depth) { return s.sim().asks(depth); },
+           py::arg("depth") = 5, "The market's asks, best first (our orders aren't included).")
       .def_property_readonly("now", [](const PyPassiveSim& s) { return s.sim().now(); })
       .def_property_readonly("rejected", [](const PyPassiveSim& s) { return s.sim().rejected(); })
       .def_property_readonly("malformed", [](const PyPassiveSim& s) { return s.sim().malformed(); })

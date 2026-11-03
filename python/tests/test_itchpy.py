@@ -126,6 +126,8 @@ class PassiveSimTest(FileTest):
         working = sim.working(Side.Buy)
         self.assertEqual((working.price, working.shares, working.ahead), (1834500, 50, 100))
         self.assertIsNone(sim.working(Side.Sell))
+        self.assertEqual(sim.bids(), [Level(1834500, 100)])  # the market's book, without us
+        self.assertEqual(sim.asks(), [Level(1834600, 100)])
         self.assertEqual((sim.rejected, sim.book_errors), (0, 0))
 
 
