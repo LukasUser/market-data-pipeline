@@ -3,7 +3,8 @@
     PYTHONPATH=build-release:python python3 python/examples/visuals.py ~/data/itch/12302019 docs/img
 
 Reads the per-symbol files from itch_split and results.jsonl from runner.py
-in that folder. Needs matplotlib and Pillow (not needed for anything else).
+in that folder. Charts are SVG (sharp at any size); the order-book replay is a
+GIF. Needs matplotlib and Pillow, which nothing else in the project uses.
 """
 
 import json
@@ -15,6 +16,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.patches import FancyBboxPatch, Rectangle  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from backtest import NS, OPEN, next_move_by_imbalance  # noqa: E402
@@ -23,57 +25,105 @@ from market_making import JoinBest, make_markets  # noqa: E402
 
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
-# Reference palette: surfaces, ink, and categorical/diverging steps per mode,
-# checked with the dataviz palette validator (all pass; light aqua needs a label).
+# Reference palette (validated for color-blind safety in both modes; light
+# aqua is below 3:1 on the surface, so it is always paired with a text label).
 THEMES = {
-    "light": dict(surface="#fcfcfb", ink="#0b0b0b", ink2="#52514e", muted="#898781",
-                  grid="#e1e0d9", axis="#c3c2b7", blue="#2a78d6", orange="#eb6834",
-                  aqua="#1baf7a", red="#e34948", blue_soft="#86b6ef", orange_soft="#f2a07d"),
-    "dark": dict(surface="#1a1a19", ink="#f0efec", ink2="#c3c2b7", muted="#898781",
-                 grid="#2c2c2a", axis="#383835", blue="#3987e5", orange="#d95926",
-                 aqua="#199e70", red="#e66767", blue_soft="#1c5cab", orange_soft="#8f3a18"),
+    "light": dict(page="#ffffff", surface="#fcfcfb", border="#e1e0d9", ink="#0b0b0b", ink2="#52514e",
+                  muted="#898781", grid="#ecebe6", axis="#c3c2b7", band="#f2f1ec",
+                  blue="#2a78d6", orange="#eb6834", aqua="#1baf7a", red="#e34948"),
+    "dark": dict(page="#0d1117", surface="#1a1a19", border="#2c2c2a", ink="#f0efec", ink2="#c3c2b7",
+                 muted="#898781", grid="#262624", axis="#383835", band="#232322",
+                 blue="#3987e5", orange="#d95926", aqua="#199e70", red="#e66767"),
 }
-FONT = ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"]
 TICK = 100  # $0.01 in price units
 MINUS = "−"
+SOURCE = "Source: NASDAQ TotalView-ITCH 5.0, December 30, 2019  ·  github.com/LukasUser/market-data-pipeline"
+
+plt.rcParams.update({
+    "font.family": "sans-serif", "font.sans-serif": ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"],
+    "svg.fonttype": "path", "axes.unicode_minus": True,
+})
 
 
 def cents(x: float, digits: int = 2) -> str:
-    return f"{'+' if x >= 0 else MINUS}{abs(x):.{digits}f}¢"
+    return f"{'+' if x > 0 else MINUS if x < 0 else ''}{abs(x):.{digits}f}¢"
 
 
 def dollars(price: int) -> str:
     return f"${price / 10_000:,.2f}"
 
 
-def setup(theme: dict, size: tuple[float, float]):
-    plt.rcParams.update({
-        "font.family": "sans-serif", "font.sans-serif": FONT, "font.size": 11,
-        "text.color": theme["ink"], "axes.labelcolor": theme["ink2"],
-        "xtick.color": theme["muted"], "ytick.color": theme["muted"],
-        "axes.edgecolor": theme["axis"], "axes.facecolor": theme["surface"],
-        "figure.facecolor": theme["surface"], "savefig.facecolor": theme["surface"],
-    })
-    fig, ax = plt.subplots(figsize=size, dpi=100)
-    for side in ("top", "right", "left"):
-        ax.spines[side].set_visible(False)
-    ax.tick_params(length=0)
-    ax.grid(axis="y", color=theme["grid"], linewidth=0.8)
-    ax.set_axisbelow(True)
-    return fig, ax
+# --- layout helpers: everything is placed in pixels from the top-left -------------
+
+class Canvas:
+    def __init__(self, theme: dict, width: int, height: int, dpi: int = 100, page: bool = False):
+        self.t, self.w, self.h = theme, width, height
+        self.fig = plt.figure(figsize=(width / 100, height / 100), dpi=dpi)
+        if page:  # GIFs have no transparency to speak of, so paint GitHub's page around the card
+            self.fig.patch.set_facecolor(theme["page"])
+        else:
+            self.fig.patch.set_alpha(0)
+        r = 14
+        self.fig.patches.append(FancyBboxPatch(
+            (1 / width, 1 / height), 1 - 2 / width, 1 - 2 / height,
+            boxstyle=f"round,pad=0,rounding_size={r / width}", mutation_aspect=width / height,
+            transform=self.fig.transFigure, facecolor=theme["surface"], edgecolor=theme["border"],
+            linewidth=1, zorder=-10))
+
+    def text(self, x, y, s, size=11, color="ink", weight="normal", ha="left", va="top", **kw):
+        return self.fig.text(x / self.w, 1 - y / self.h, s, fontsize=size, color=self.t.get(color, color),
+                             fontweight=weight, ha=ha, va=va, **kw)
+
+    def axes(self, x, y, width, height):
+        ax = self.fig.add_axes([x / self.w, 1 - (y + height) / self.h, width / self.w, height / self.h])
+        ax.set_facecolor("none")
+        for side in ax.spines.values():
+            side.set_visible(False)
+        ax.tick_params(length=0, colors=self.t["muted"], labelsize=10)
+        return ax
+
+    def header(self, title, subtitle):
+        self.text(36, 30, title, size=17, weight="bold")
+        self.text(36, 60, subtitle, size=11, color="ink2", linespacing=1.45)
+
+    def footer(self, s=SOURCE):
+        self.text(36, self.h - 22, s, size=8.5, color="muted", va="bottom")
+
+    def save(self, path: Path):
+        self.fig.savefig(path, transparent=True)
+        plt.close(self.fig)
+
+    def frame(self) -> Image.Image:
+        self.fig.canvas.draw()
+        im = Image.frombuffer("RGBA", self.fig.canvas.get_width_height(), self.fig.canvas.buffer_rgba())
+        plt.close(self.fig)
+        return im.convert("RGB")
 
 
-def titles(fig, theme, title: str, subtitle: str):
-    fig.text(0.04, 0.95, title, fontsize=16, fontweight="bold", color=theme["ink"], va="top")
-    fig.text(0.04, 0.885, subtitle, fontsize=11, color=theme["ink2"], va="top")
+def rounded_bar(ax, x, y, width, height, color, radius=4, square=None, gap=None, zorder=2):
+    """A bar with rounded corners in data coordinates (limits must already be
+    set). `square` ('left', 'right', 'bottom', 'top') keeps the baseline side
+    square; `gap` draws a surface-colored outline that separates neighbours."""
+    if width < 0:
+        x, width = x + width, -width
+    if height < 0:
+        y, height = y + height, -height
+    (x0, y0), (x1, y1) = ax.transData.transform([(0, 0), (1, 1)])
+    sx, sy = abs(x1 - x0), abs(y1 - y0)  # pixels per data unit
+    r = min(radius, width * sx / 2, height * sy / 2)
+    if r <= 0.01:
+        return
+    ax.add_patch(FancyBboxPatch((x, y), width, height, boxstyle=f"round,pad=0,rounding_size={r / sx}",
+                                mutation_aspect=sx / sy, facecolor=color, edgecolor=gap or "none",
+                                linewidth=1.5 if gap else 0, zorder=zorder))
+    rx, ry = r / sx, r / sy
+    cover = {"bottom": (x, y, width, ry), "top": (x, y + height - ry, width, ry),
+             "left": (x, y, rx, height), "right": (x + width - rx, y, rx, height)}.get(square)
+    if cover:
+        ax.add_patch(Rectangle(cover[:2], *cover[2:], facecolor=color, edgecolor="none", zorder=zorder))
 
 
-def save(fig, out: Path, name: str, mode: str):
-    fig.savefig(out / f"{name}-{mode}.png", dpi=100, facecolor=fig.get_facecolor())
-    plt.close(fig)
-
-
-# --- data -------------------------------------------------------------------
+# --- data ---------------------------------------------------------------------------
 
 def aapl_market_making(day: Path):
     sim = PassiveSim(day / "AAPL.itch", "AAPL", latency_ns=10_000)
@@ -87,142 +137,196 @@ def opening_price(path: Path, symbol: str) -> float:
     return float("nan")
 
 
-# --- charts -----------------------------------------------------------------
-
-def waterfall(r, out: Path):
-    n = r.shares_filled
-    spread = 100 * r.spread_captured / n
-    adverse = 100 * r.markout_1s / n
-    rebates = 100 * r.rebates / n
-    net = 100 * r.pnl / n
-    later = net - spread - adverse - rebates  # moves after 1 s and the 16:00 close-out
-    steps = [("Spread\ncaptured", spread), ("Adverse selection\n(first second)", adverse),
-             ("Later moves and\n16:00 close-out", later), ("NASDAQ\nrebate", rebates)]
-
-    for mode, t in THEMES.items():
-        fig, ax = setup(t, (10, 5.2))
-        fig.subplots_adjust(left=0.08, right=0.96, top=0.76, bottom=0.17)
-        level = 0.0
-        for i, (label, value) in enumerate(steps):
-            color = t["blue"] if value >= 0 else t["red"]
-            ax.bar(i, value, bottom=level, width=0.56, color=color, edgecolor=t["surface"], linewidth=2)
-            top = max(level, level + value)
-            ax.text(i, top + 0.06, cents(value), ha="center", va="bottom", fontsize=12,
-                    fontweight="bold", color=t["ink"])
-            if i < len(steps) - 1:  # connector to the next step
-                ax.plot([i + 0.28, i + 0.72], [level + value] * 2, color=t["muted"], linewidth=1, linestyle=":")
-            level += value
-        ax.bar(len(steps), net, width=0.56, color=t["ink2"], edgecolor=t["surface"], linewidth=2)
-        ax.text(len(steps), 0.06, cents(net), ha="center", va="bottom", fontsize=12, fontweight="bold", color=t["ink"])
-        ax.axhline(0, color=t["axis"], linewidth=1.2)
-        ax.axhline(-1.36, color=t["muted"], linewidth=1, linestyle="--")
-        ax.text(len(steps) + 0.42, -1.30, f"market orders\n{cents(-1.36)}", va="bottom", ha="left",
-                fontsize=10, color=t["ink2"])
-        ax.set_xticks(range(len(steps) + 1), [s for s, _ in steps] + ["Net per\nshare"])
-        ax.tick_params(axis="x", colors=t["ink2"], labelsize=10.5)
-        ax.yaxis.set_major_formatter(lambda v, _: cents(v, 1) if v else "0")
-        ax.set_xlim(-0.6, len(steps) + 1.3)
-        ax.set_ylim(min(-2.2, level - 0.3), 1.5)
-        titles(fig, t, "Resting orders earn the spread, then lose it to adverse selection",
-               f"AAPL market making, 2019-12-30: join the best bid and ask, 10 µs latency. "
-               f"Per share filled ({n:,} shares).")
-        save(fig, out, "pnl-waterfall", mode)
-
-
-def imbalance(day: Path, out: Path):
-    quotes = list(QuoteStream(day / "AAPL.itch", "AAPL"))
-    rows = next_move_by_imbalance(quotes)
-    labels = [f"{lo:.1f}–{hi:.1f}" for lo, hi, _, _ in rows]
-    shares = [100 * up / (up + down) for _, _, up, down in rows]
-
-    for mode, t in THEMES.items():
-        fig, ax = setup(t, (10, 5.2))
-        fig.subplots_adjust(left=0.08, right=0.96, top=0.76, bottom=0.15)
-        ax.bar(range(len(rows)), shares, width=0.56, color=t["blue"], edgecolor=t["surface"], linewidth=2)
-        for i, s in enumerate(shares):
-            ax.text(i, s + 1, f"{s:.1f}%", ha="center", va="bottom", fontsize=12, fontweight="bold", color=t["ink"])
-        ax.axhline(50, color=t["muted"], linewidth=1, linestyle="--")
-        ax.text(-0.45, 51, "coin flip", ha="left", va="bottom", fontsize=10, color=t["ink2"])
-        ax.set_xticks(range(len(rows)), labels)
-        ax.tick_params(axis="x", colors=t["ink2"], labelsize=11)
-        ax.set_xlabel("Top-of-book imbalance: bid shares ÷ (bid + ask shares)", fontsize=11, labelpad=10)
-        ax.yaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")
-        ax.set_ylim(0, 75)
-        titles(fig, t, "Order book imbalance predicts AAPL's next price move",
-               "Share of quotes where the next mid-price change is up, 09:30–16:00, 2019-12-30.")
-        save(fig, out, "imbalance", mode)
-
-
-def queue_audit(out: Path):
-    # From the full-day queue audit (tools/itch_queue) over all 8,892 stocks.
-    for mode, t in THEMES.items():
-        fig = plt.figure(figsize=(10, 3.2), dpi=100)
-        fig.patch.set_facecolor(t["surface"])
-        fig.text(0.05, 0.86, "Does our matching engine queue orders like NASDAQ?", fontsize=15,
-                 fontweight="bold", color=t["ink"], va="top")
-        fig.text(0.05, 0.62, "99.81%", fontsize=58, fontweight="bold", color=t["ink"], va="top")
-        fig.text(0.43, 0.56, "of 5,683,179 regular-hours executions hit the order\n"
-                 "our engine had at the front of the queue", fontsize=13, color=t["ink2"], va="top",
-                 linespacing=1.4)
-        fig.text(0.05, 0.13, "0 at a worse price   ·   0 unknown orders   ·   0 book errors   ·   "
-                 "all 8,892 stocks, 2019-12-30", fontsize=11, color=t["muted"], va="bottom")
-        save(fig, out, "queue-audit", mode)
-
-
-def stocks(day: Path, out: Path):
+def stock_bps(day: Path) -> dict[int, tuple[list[tuple[str, float]], int, int]]:
+    """Per latency (join strategy): each stock's profit per dollar traded in
+    basis points, how many stocks made money, and how many were run."""
     records = [json.loads(line) for line in (day / "results.jsonl").read_text().splitlines()]
     latest = {(r["symbol"], r["strategy"], r["latency_us"]): r for r in records if "error" not in r}
     prices = {s: opening_price(day / f"{s}.itch", s) for s, _, _ in latest}
-    series = []
-    for latency in (10, 1000):
-        # Profit per dollar traded, in basis points: cents per share would make
-        # a $1,800 stock look 100 times riskier than an $18 one.
-        pts = [(prices[s], 10_000 * r["pnl"] / r["shares"] / prices[s], s)
-               for (s, strat, lat), r in latest.items() if strat == "join" and lat == latency and r["shares"]]
-        series.append((latency, pts))
-    callouts = {"AMZN", "TSLA", "GOOGL", "AAPL", "NIO"}
+    out = {}
+    for lat in (10, 1000):
+        runs = [(s, r) for (s, strat, l), r in latest.items() if strat == "join" and l == lat]
+        bps = [(s, 10_000 * r["pnl"] / r["shares"] / prices[s]) for s, r in runs if r["shares"]]
+        out[lat] = (bps, sum(1 for _, r in runs if r["pnl"] > 0), len(runs))
+    return out
 
+
+# --- static charts (SVG) -----------------------------------------------------------
+
+def queue_audit(out: Path):
+    # Counts from the full-day queue audit (tools/itch_queue) over all 8,892 stocks.
+    front, total = 5_672_614, 5_683_179
+    share = 100 * front / total
     for mode, t in THEMES.items():
-        fig, ax = setup(t, (10, 5.6))
-        fig.subplots_adjust(left=0.09, right=0.96, top=0.79, bottom=0.13)
-        ax.grid(axis="x", color=t["grid"], linewidth=0.8)
+        c = Canvas(t, 1000, 330)
+        c.header("Our matching engine queues orders like NASDAQ does",
+                 "Every NASDAQ execution, checked against the order our engine had at the front of its queue.")
+        c.text(36, 108, f"{share:.2f}%", size=58, weight="bold")
+        c.text(40, 182, f"of {total:,} regular-hours executions hit the\nfront of our queue",
+               size=11.5, color="ink2", linespacing=1.45)
+        for i, (n, label) in enumerate([("0", "executions at a\nworse price"), ("0", "orders we\ndidn't know"),
+                                        ("0", "book errors across\n8,892 stocks")]):
+            x = 470 + i * 170
+            c.text(x, 116, n, size=30, weight="bold")
+            c.text(x, 160, label, size=10.5, color="ink2", linespacing=1.4)
+        ax = c.axes(36, 252, 928, 12)
+        ax.set_xlim(0, 100)
+        ax.set_ylim(0, 1)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        rounded_bar(ax, 0, 0, 100, 1, t["grid"], radius=6)
+        rounded_bar(ax, 0, 0, share, 1, t["blue"], radius=6)
+        c.text(964, 274, f"{100 - share:.2f}% behind other orders at the same price", size=9.5,
+               color="muted", ha="right")
+        c.footer()
+        c.save(out / f"queue-audit-{mode}.svg")
+
+
+def imbalance(day: Path, out: Path):
+    rows = next_move_by_imbalance(list(QuoteStream(day / "AAPL.itch", "AAPL")))
+    labels = [f"{lo:.1f}–{hi:.1f}" for lo, hi, _, _ in rows]
+    shares = [100 * up / (up + down) for _, _, up, down in rows]
+    for mode, t in THEMES.items():
+        c = Canvas(t, 1000, 540)
+        c.header("Order-book imbalance predicts AAPL's next price move",
+                 "How often the next mid-price change is up, by top-of-book imbalance: bid shares ÷ "
+                 "all shares at the best bid and ask.\nRegular hours, 09:30–16:00.")
+        ax = c.axes(36, 130, 928, 300)
+        ax.set_xlim(-0.6, len(rows) - 0.4)
+        ax.set_ylim(0, 72)
+        ax.set_yticks([])
+        ax.set_xticks(range(len(rows)), labels, fontsize=11, color=t["ink2"])
+        ax.tick_params(axis="x", pad=8)
+        for i, s in enumerate(shares):
+            rounded_bar(ax, i - 0.3, 0, 0.6, s, t["blue"], radius=5, square="bottom")
+            ax.text(i, s + 1.6, f"{s:.1f}%", ha="center", va="bottom", fontsize=13, fontweight="bold",
+                    color=t["ink"])
         ax.axhline(0, color=t["axis"], linewidth=1.2)
-        for (latency, pts), color, label in zip(series, (t["blue"], t["orange"]), ("10 µs latency", "1 ms latency")):
-            ax.scatter([p for p, _, _ in pts], [c for _, c, _ in pts], s=42, color=color,
-                       edgecolor=t["surface"], linewidth=1.5, label=label, zorder=3)
-        for price, pnl, sym in series[0][1]:
-            if sym in callouts:
-                ax.annotate(sym, (price, pnl), xytext=(7, -3 if pnl < 0 else 3), textcoords="offset points",
-                            fontsize=10, color=t["ink2"], fontweight="bold")
-        ax.set_xscale("log")
-        ax.xaxis.set_major_formatter(lambda v, _: f"${v:,.0f}")
-        ax.yaxis.set_major_formatter(lambda v, _: f"{'+' if v > 0 else MINUS if v < 0 else ''}{abs(v):g} bp")
-        ax.set_xlabel("Share price at the open (log scale)", fontsize=11, labelpad=8)
-        ax.set_ylabel("Profit per $ traded (basis points)", fontsize=11)
-        legend = ax.legend(loc="lower left", frameon=False, fontsize=10.5, labelcolor=t["ink2"])
-        legend.set_zorder(4)
-        n10 = sum(1 for _, c, _ in series[0][1] if c > 0)
-        n1000 = sum(1 for _, c, _ in series[1][1] if c > 0)
-        titles(fig, t, "Market making across the 100 busiest stocks",
-               f"Join the best bid and ask, 2019-12-30. Profitable: {n10} of 100 at 10 µs, "
-               f"{n1000} of 100 at 1 ms. Each dot is one stock.")
-        save(fig, out, "stocks", mode)
+        ax.axhline(50, color=t["muted"], linewidth=1, linestyle=(0, (4, 4)), zorder=3)
+        ax.text(-0.55, 51.2, "50%: a coin flip", fontsize=10, color=t["ink2"], va="bottom")
+        c.text(36, 470, r"$\leftarrow$  sellers outweigh buyers", size=10, color="muted")
+        c.text(964, 470, r"buyers outweigh sellers  $\rightarrow$", size=10, color="muted", ha="right")
+        c.footer()
+        c.save(out / f"imbalance-{mode}.svg")
 
 
-# --- animated order book -------------------------------------------------------
+def waterfall(r, out: Path):
+    n = r.shares_filled
+    spread, adverse = 100 * r.spread_captured / n, 100 * r.markout_1s / n
+    rebates, net = 100 * r.rebates / n, 100 * r.pnl / n
+    later = net - spread - adverse - rebates  # moves after the first second, and the 16:00 close-out
+    steps = [("Spread\ncaptured", spread), ("Adverse selection\nin the first second", adverse),
+             ("Later moves and\n16:00 close-out", later), ("NASDAQ\nrebate", rebates)]
+    for mode, t in THEMES.items():
+        c = Canvas(t, 1000, 540)
+        c.header("Resting orders earn the spread, then lose it to adverse selection",
+                 f"AAPL market making at the best bid and ask with 10 µs latency. "
+                 f"Profit per share filled, {n:,} shares.")
+        ax = c.axes(90, 110, 860, 330)
+        ax.set_xlim(-0.6, len(steps) + 0.6)
+        ax.set_ylim(-1.8, 1.5)
+        ax.set_yticks([-1.5, -1, -0.5, 0, 0.5, 1, 1.5])
+        ax.yaxis.set_major_formatter(lambda v, _: cents(v, 1) if v else "0")
+        ax.grid(axis="y", color=t["grid"], linewidth=0.8)
+        ax.set_axisbelow(True)
+        ax.set_xticks(range(len(steps) + 1), [s for s, _ in steps] + ["Net per\nshare"], fontsize=10.5,
+                      color=t["ink2"], linespacing=1.35)
+        ax.tick_params(axis="x", pad=10)
+        level = 0.0
+        for i, (_, value) in enumerate(steps):
+            rounded_bar(ax, i - 0.28, level, 0.56, value, t["blue"] if value >= 0 else t["red"], radius=5)
+            ax.text(i, max(level, level + value) + 0.07, cents(value), ha="center", va="bottom", fontsize=12.5,
+                    fontweight="bold", color=t["ink"])
+            ax.plot([i + 0.28, i + 0.72], [level + value] * 2, color=t["muted"], linewidth=1,
+                    linestyle=(0, (2, 2)), zorder=1)
+            level += value
+        rounded_bar(ax, len(steps) - 0.28, 0, 0.56, net, t["ink2"], radius=5, square="top")
+        ax.text(len(steps), 0.07, cents(net), ha="center", va="bottom", fontsize=12.5, fontweight="bold",
+                color=t["ink"])
+        ax.axhline(0, color=t["axis"], linewidth=1.2, zorder=1)
+        ax.axhline(-1.36, color=t["muted"], linewidth=1, linestyle=(0, (4, 4)), zorder=1)
+        ax.text(len(steps) + 0.55, -1.42, f"Market orders: {cents(-1.36)}", fontsize=10, color=t["ink2"],
+                ha="right", va="top")
+        c.footer()
+        c.save(out / f"pnl-waterfall-{mode}.svg")
 
-def capture_fill(day: Path, start=OPEN + 3600 * NS, frame_ns=150_000_000, timeout_s=25, after_s=4,
+
+def beeswarm(xs_px: list[float], diameter: float) -> list[float]:
+    """Vertical offsets (pixels) that stack dots without overlap, closest to the center line first."""
+    placed: list[tuple[float, float]] = []
+    offsets = [0.0] * len(xs_px)
+    for i in sorted(range(len(xs_px)), key=lambda i: xs_px[i]):
+        x = xs_px[i]
+        near = [(px, py) for px, py in placed if abs(px - x) < diameter]
+        for k in range(200):
+            y = ((k + 1) // 2) * diameter * 0.92 * (1 if k % 2 else -1)
+            if all((px - x) ** 2 + (py - y) ** 2 >= (diameter * 0.98) ** 2 for px, py in near):
+                break
+        placed.append((x, y))
+        offsets[i] = y
+    return offsets
+
+
+def stocks(day: Path, out: Path):
+    data = stock_bps(day)
+    lim = 3.0
+    rows = [(10, "10 \u00b5s latency"), (1000, "1 ms latency")]
+    for mode, t in THEMES.items():
+        c = Canvas(t, 1000, 540)
+        c.header("Faster quotes keep more stocks profitable",
+                 "Market making at the best bid and ask on the 100 busiest stocks. Profit per $ traded; "
+                 "each dot is one stock.")
+        ax = c.axes(200, 136, 560, 344)
+        ax.set_xlim(-lim - 0.25, lim + 0.25)
+        ax.set_ylim(0, 2)
+        ax.set_yticks([])
+        ax.set_xticks([-3, -2, -1, 0, 1, 2, 3])
+        ax.xaxis.set_major_formatter(lambda v, _: f"{'+' if v > 0 else MINUS if v < 0 else ''}{abs(v):g} bp")
+        ax.tick_params(axis="x", labelsize=10, pad=6)
+        ax.grid(axis="x", color=t["grid"], linewidth=0.8)
+        ax.set_axisbelow(True)
+        ax.axhline(1, color=t["grid"], linewidth=0.8)
+        ax.axvline(0, color=t["axis"], linewidth=1.4, zorder=1)
+        ax.text(-0.12, 2.02, r"$\leftarrow$  loses money", ha="right", va="bottom", fontsize=9.5, color=t["muted"])
+        ax.text(0.12, 2.02, r"makes money  $\rightarrow$", ha="left", va="bottom", fontsize=9.5, color=t["muted"])
+        sx = abs(ax.transData.transform((1, 0))[0] - ax.transData.transform((0, 0))[0])
+        sy = abs(ax.transData.transform((0, 1))[1] - ax.transData.transform((0, 0))[1])
+        diameter = 7.0
+        for row, ((latency, label), color) in enumerate(zip(rows, (t["blue"], t["orange"]))):
+            center = 1.5 - row
+            pts, wins, runs = data[latency]
+            inside = [(sym, v) for sym, v in pts if abs(v) <= lim]
+            ys = [center + dy / sy for dy in beeswarm([v * sx for _, v in inside], diameter)]
+            ax.scatter([v for _, v in inside], ys, s=(diameter * 0.75) ** 2, color=color,
+                       edgecolor=t["surface"], linewidth=0.8, zorder=3)
+            # Stocks off the chart: an arrow at the edge, named, with their value.
+            for side in (-1, 1):
+                off = sorted(((sym, v) for sym, v in pts if v * side > lim), key=lambda p: -abs(p[1]))
+                for k, (sym, v) in enumerate(off):
+                    y = center + 0.32 - k * 0.2
+                    ax.scatter([side * (lim + 0.12)], [y], s=42, marker=">" if side > 0 else "<", color=color,
+                               edgecolor=t["surface"], linewidth=0.8, zorder=3, clip_on=False)
+                    ax.text(side * (lim + 0.3), y, f"{sym} {'+' if v > 0 else MINUS}{abs(v):.1f}",
+                            ha="left" if side > 0 else "right", va="center", fontsize=8.5, color=t["ink2"])
+            median = sorted(v for _, v in pts)[len(pts) // 2]
+            y0 = 136 + 172 * row
+            c.text(36, y0 + 62, label, size=12.5, weight="bold")
+            c.text(36, y0 + 85, f"median {'+' if median > 0 else MINUS}{abs(median):.2f} bp", size=10, color="ink2")
+            c.text(964, y0 + 60, f"{wins} of {runs}", size=22, weight="bold", ha="right")
+            c.text(964, y0 + 92, "made money", size=10, color="ink2", ha="right")
+        c.footer()
+        c.save(out / f"stocks-{mode}.svg")
+
+
+# --- animated order book (GIF) ----------------------------------------------------
+
+def capture_fill(day: Path, start=OPEN + 3600 * NS, frame_ns=100_000_000, timeout_s=25, after_s=4,
                  min_ahead=400, min_wait_s=3, depth=10):
     """Finds the first time a 100-share buy joining AAPL's best bid fills while
     the bid stays put, and records the book every `frame_ns` from placement
     until `after_s` after the fill."""
     sim = PassiveSim(day / "AAPL.itch", "AAPL", latency_ns=10_000)
     attempt = None
-
-    def snapshot(t):
-        return dict(t=t, bids=[(l.price, l.shares) for l in sim.bids(depth)],
-                    asks=[(l.price, l.shares) for l in sim.asks(depth)], ours=sim.working(Side.Buy))
-
     for q in sim:
         t = q.timestamp
         fills = sim.take_fills()
@@ -233,117 +337,147 @@ def capture_fill(day: Path, start=OPEN + 3600 * NS, frame_ns=150_000_000, timeou
                 sim.place(Side.Buy, q.bid.price, 100)
                 attempt = dict(t0=t, price=q.bid.price, frames=[], next=t, fill=None, ahead0=None)
             continue
-
         ours = sim.working(Side.Buy)
         if attempt["ahead0"] is None and ours is not None:
             attempt["ahead0"] = ours.ahead
         if fills and attempt["fill"] is None:
             attempt["fill"] = (t, fills[-1].price)
         if attempt["fill"] is None and (q.bid.price != attempt["price"] or t - attempt["t0"] > timeout_s * NS):
-            sim.place(Side.Buy, attempt["price"], 0)  # give up, cancel and try again later
+            sim.place(Side.Buy, attempt["price"], 0)  # give up, cancel, and try again later
             attempt = None
             continue
-
         while attempt["next"] <= t:
-            frame = snapshot(attempt["next"])
-            frame["fill"] = attempt["fill"]
-            attempt["frames"].append(frame)
+            attempt["frames"].append(dict(
+                t=attempt["next"], bids=[(l.price, l.shares) for l in sim.bids(depth)],
+                asks=[(l.price, l.shares) for l in sim.asks(depth)], ours=sim.working(Side.Buy),
+                mid=(q.bid.price + q.ask.price) / 2, fill=attempt["fill"]))
             attempt["next"] += frame_ns
         if attempt["fill"] and t > attempt["fill"][0] + after_s * NS:
-            waited = attempt["fill"][0] - attempt["t0"]
-            if (attempt["ahead0"] or 0) >= min_ahead and waited >= min_wait_s * NS:
+            if (attempt["ahead0"] or 0) >= min_ahead and attempt["fill"][0] - attempt["t0"] >= min_wait_s * NS:
                 return attempt
             attempt = None  # filled too quickly to show the queue moving; find another
     raise RuntimeError("no suitable fill found")
 
 
+def clock(ns: int) -> str:
+    s = ns / NS
+    return f"{int(s // 3600):02d}:{int(s // 60 % 60):02d}:{s % 60:06.3f}"
+
+
+def order_book_frame(t: dict, a: dict, f: dict, rows: list[int], xmax: float, mid_range) -> Image.Image:
+    c = Canvas(t, 960, 540, dpi=125, page=True)
+    ours_price, ahead0 = a["price"], a["ahead0"]
+    c.text(36, 30, "AAPL order book, replayed from NASDAQ", size=16, weight="bold")
+    c.text(36, 56, "A simulated 100-share buy waits in the real queue at the best bid", size=10.5, color="ink2")
+    c.text(924, 28, clock(f["t"]), size=16, weight="bold", ha="right")
+    c.text(924, 54, "December 30, 2019", size=10, color="muted", ha="right")
+
+    # Ladder: prices down the middle, bids to the left, asks to the right.
+    ax = c.axes(36, 112, 540, 380)
+    gutter = xmax * 0.42
+    ax.set_xlim(-xmax - gutter, xmax + gutter)
+    ax.set_ylim(-0.6, len(rows) - 0.4)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    bids, asks = dict(f["bids"]), dict(f["asks"])
+    ours = f["ours"]
+    best_bid, best_ask = max(bids, default=None), min(asks, default=None)
+    for col, text, ha in ((-gutter - xmax, "BIDS  ·  buyers", "left"), (0, "PRICE", "center"),
+                          (gutter + xmax, "sellers  ·  ASKS", "right")):
+        ax.text(col, len(rows) - 0.1, text, ha=ha, va="bottom", fontsize=8.5, color=t["muted"], fontweight="bold")
+    for i, price in enumerate(rows):
+        if price in (best_bid, best_ask):
+            ax.add_patch(Rectangle((-xmax - gutter, i - 0.48), 2 * (xmax + gutter), 0.96, facecolor=t["band"],
+                                   edgecolor="none", zorder=0))
+        ax.text(0, i, dollars(price), ha="center", va="center", fontsize=9.5,
+                color=t["ink"] if price in (best_bid, best_ask) else t["ink2"],
+                fontweight="bold" if price in (best_bid, best_ask) else "normal")
+        h, y = 0.62, i - 0.31
+        if price in asks:
+            size = asks[price]
+            rounded_bar(ax, gutter / 2, y, min(size, xmax), h, t["orange"], square="left", radius=3)
+            ax.text(gutter / 2 + min(size, xmax) + xmax * 0.02, i, f"{size:,}", va="center", fontsize=8,
+                    color=t["muted"])
+        if price in bids:
+            size = bids[price]
+            end = -gutter / 2 - min(size + (ours.shares if ours and ours.price == price else 0), xmax)
+            if ours is not None and price == ours.price:
+                ahead = min(ours.ahead, size)
+                segments = [(ahead, t["blue"]), (ours.shares, t["aqua"]), (size - ahead, t["blue"])]
+                left = -gutter / 2
+                for k, (width, color) in enumerate(segments):
+                    if width > 0:
+                        rounded_bar(ax, left, y, -width, h, color, radius=3,
+                                    square=None if k == len(segments) - 1 or (k == 1 and size - ahead <= 0)
+                                    else "left", gap=t["surface"])
+                    if k == 1:
+                        ax.text(left - width / 2, i + 0.42, "YOU", ha="center", va="bottom", fontsize=8.5,
+                                fontweight="bold", color=t["ink"])
+                    left -= width
+            else:
+                rounded_bar(ax, -gutter / 2, y, -min(size, xmax), h, t["blue"], square="right", radius=3)
+            ax.text(end - xmax * 0.02, i, f"{size:,}", va="center", ha="right", fontsize=8, color=t["muted"])
+
+    # Side panel: status, the big number, and the price since we joined.
+    x0 = 612
+    filled = f["fill"] is not None
+    c.text(x0, 112, "●", size=11, color=t["aqua"])
+    c.text(x0 + 18, 113, "FILLED" if filled else "WAITING IN THE QUEUE", size=10, weight="bold", color="ink2")
+    c.text(x0, 136, f"Buy 100 @ {dollars(ours_price)}", size=13, weight="bold")
+    if not filled:
+        ahead = ours.ahead if ours is not None else ahead0
+        c.text(x0, 168, f"{ahead:,}", size=40, weight="bold")
+        c.text(x0, 222, "shares ahead of you", size=10.5, color="ink2")
+        bar = c.axes(x0, 248, 312, 8)
+        bar.set_xlim(0, 1)
+        bar.set_ylim(0, 1)
+        bar.set_xticks([])
+        bar.set_yticks([])
+        rounded_bar(bar, 0, 0, 1, 1, t["grid"], radius=4)
+        rounded_bar(bar, 0, 0, max(0.02, 1 - ahead / ahead0), 1, t["aqua"], radius=4)
+        c.text(x0, 264, f"{ahead0 - ahead:,} of {ahead0:,} cleared", size=9.5, color="muted")
+    else:
+        fill_t, fill_price = f["fill"]
+        mark = (f["mid"] - fill_price) / 100
+        c.text(x0, 168, cents(mark, 1), size=40, weight="bold")
+        c.text(x0, 222, "per share, marked to the mid price", size=10.5, color="ink2")
+        c.text(x0, 248, f"Filled at {clock(fill_t)}.\nThe price then fell through your level:\n"
+               "adverse selection.", size=9.5, color="muted", linespacing=1.45)
+
+    spark = c.axes(x0, 352, 312, 112)
+    times = [g["t"] for g in a["frames"]]
+    seen = [g for g in a["frames"] if g["t"] <= f["t"]]
+    spark.set_xlim(times[0], times[-1])
+    spark.set_ylim(*mid_range)
+    spark.set_xticks([])
+    spark.set_yticks([])
+    spark.axhline(ours_price, color=t["aqua"], linewidth=1.2, linestyle=(0, (3, 3)))
+    spark.text(times[-1], ours_price, " your price", fontsize=8.5, color=t["ink2"], va="bottom", ha="right")
+    spark.plot([g["t"] for g in seen], [g["mid"] for g in seen], color=t["ink"], linewidth=2,
+               solid_capstyle="round")
+    if filled:
+        ft = f["fill"][0]
+        spark.axvline(ft, color=t["muted"], linewidth=1, linestyle=(0, (2, 2)))
+        spark.text(ft, mid_range[1], " fill", fontsize=8.5, color=t["ink2"], va="top")
+    c.text(x0, 340, "Mid price since you joined", size=9.5, color="muted", va="bottom")
+    c.text(36, 516, "Your order joins the back of the queue and moves up as orders ahead trade or cancel. "
+           "Simulated with 10 µs latency.", size=8.5, color="muted", va="bottom")
+    return c.frame()
+
+
 def order_book_gif(day: Path, out: Path):
     a = capture_fill(day)
-    ours_price = a["price"]
-    rows = list(range(ours_price - 6 * TICK, ours_price + 7 * TICK, TICK))
+    rows = list(range(a["price"] - 6 * TICK, a["price"] + 7 * TICK, TICK))
     visible = [s for f in a["frames"] for p, s in f["bids"] + f["asks"] if p in rows]
-    xmax = sorted(visible)[int(0.97 * (len(visible) - 1))] * 1.15
-
+    xmax = sorted(visible)[int(0.95 * (len(visible) - 1))] * 1.1
+    mids = [f["mid"] for f in a["frames"]] + [a["price"]]
+    pad = (max(mids) - min(mids)) * 0.25 or TICK
+    mid_range = (min(mids) - pad, max(mids) + pad)
     for mode, t in THEMES.items():
-        setup(t, (1, 1))
-        plt.close("all")
-        images = []
-        for f in a["frames"]:
-            fig = plt.figure(figsize=(9.6, 5.4), dpi=100)
-            ax = fig.add_axes([0.1, 0.1, 0.5, 0.7])
-            for side in ("top", "right", "left", "bottom"):
-                ax.spines[side].set_visible(False)
-            ax.tick_params(length=0)
-            ax.set_facecolor(t["surface"])
-            bids, asks = dict(f["bids"]), dict(f["asks"])
-            ours = f["ours"]
-            for price in rows:
-                y = (price - rows[0]) / TICK
-                if price in asks:
-                    ax.barh(y, asks[price], height=0.72, color=t["orange"], edgecolor=t["surface"], linewidth=2)
-                if price in bids:
-                    total = bids[price]
-                    if ours is not None and price == ours.price:
-                        ahead = min(ours.ahead, total)
-                        parts = [(0, ahead, t["blue"]), (ahead, ours.shares, t["aqua"]),
-                                 (ahead + ours.shares, total - ahead, t["blue"])]
-                        for left, width, color in parts:
-                            if width > 0:
-                                ax.barh(y, -width, left=-left, height=0.72, color=color,
-                                        edgecolor=t["surface"], linewidth=2)
-                        ax.annotate("YOU", (-(ahead + ours.shares / 2), y + 0.36), xytext=(0, 8),
-                                    textcoords="offset points", ha="center", va="bottom", fontsize=10,
-                                    fontweight="bold", color=t["ink"],
-                                    arrowprops=dict(arrowstyle="-", color=t["ink2"], linewidth=1))
-                    else:
-                        ax.barh(y, -total, height=0.72, color=t["blue"], edgecolor=t["surface"], linewidth=2)
-            ax.axvline(0, color=t["axis"], linewidth=1.2)
-            ax.set_xlim(-xmax, xmax)
-            ax.set_ylim(-0.6, len(rows) - 0.4)
-            ax.set_yticks(range(len(rows)), [dollars(p) for p in rows], fontsize=9.5, color=t["ink2"])
-            ax.xaxis.set_major_formatter(lambda v, _: f"{abs(v):,.0f}")
-            ax.tick_params(axis="x", colors=t["muted"], labelsize=9)
-            ax.set_title("BIDS (buyers)", loc="left", fontsize=10.5, fontweight="bold", color=t["ink2"])
-            ax.set_title("ASKS (sellers)", loc="right", fontsize=10.5, fontweight="bold", color=t["ink2"])
-            ax.set_xlabel("Shares resting at each price", fontsize=10, color=t["ink2"])
-
-            secs = f["t"] / NS
-            clock = f"{int(secs // 3600):02d}:{int(secs // 60 % 60):02d}:{secs % 60:06.3f}"
-            fig.text(0.04, 0.95, "AAPL order book, replayed from NASDAQ ITCH", fontsize=15,
-                     fontweight="bold", color=t["ink"], va="top")
-            fig.text(0.04, 0.885, f"December 30, 2019   {clock}", fontsize=11, color=t["ink2"], va="top")
-
-            px = 0.66
-            fig.text(px, 0.78, f"Your order: buy 100 @ {dollars(ours_price)}", fontsize=12,
-                     fontweight="bold", color=t["ink"])
-            if f["fill"] is None:
-                ahead = ours.ahead if ours is not None else (a["ahead0"] or 0)
-                fig.text(px, 0.68, "Shares ahead of you", fontsize=11, color=t["ink2"])
-                fig.text(px, 0.56, f"{ahead:,}", fontsize=40, fontweight="bold", color=t["ink"])
-                fig.text(px, 0.46, f"started at {a['ahead0']:,}", fontsize=10.5, color=t["muted"])
-                note = ("You joined the back of the queue.\nOrders ahead that trade or cancel\n"
-                        "move you forward.")
-            else:
-                fill_t, fill_price = f["fill"]
-                mid = (bids and asks) and (max(bids) + min(asks)) / 2
-                mark = (mid - fill_price) / 100 if mid else 0.0
-                fs = fill_t / NS
-                fig.text(px, 0.68, f"Filled at {int(fs // 3600):02d}:{int(fs // 60 % 60):02d}:{fs % 60:06.3f}",
-                         fontsize=11, color=t["ink2"])
-                fig.text(px, 0.56, cents(mark, 1), fontsize=40, fontweight="bold", color=t["ink"])
-                fig.text(px, 0.46, "per share, marked to the mid price", fontsize=10.5, color=t["muted"])
-                note = ("Filled. Now watch the price:\nfills often come just before\n"
-                        "it moves against you.")
-            fig.text(px, 0.18, note, fontsize=10.5, color=t["ink2"], linespacing=1.5)
-            fig.text(px, 0.08, "Simulated with 10 µs latency", fontsize=9, color=t["muted"])
-
-            fig.canvas.draw()
-            images.append(Image.frombuffer("RGBA", fig.canvas.get_width_height(),
-                                           fig.canvas.buffer_rgba()).convert("RGB"))
-            plt.close(fig)
-
-        frames = [im.quantize(colors=64, method=Image.Quantize.MEDIANCUT) for im in images]
-        durations = [100] * (len(frames) - 1) + [2500]  # hold the last frame
+        images = [order_book_frame(t, a, f, rows, xmax, mid_range) for f in a["frames"]]
+        palette = images[-1].quantize(colors=96, method=Image.Quantize.MEDIANCUT)
+        frames = [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in images]
+        durations = [70] * (len(frames) - 1) + [3000]  # hold the last frame
         frames[0].save(out / f"order-book-{mode}.gif", save_all=True, append_images=frames[1:],
                        duration=durations, loop=0, optimize=True)
     return a
@@ -352,15 +486,13 @@ def order_book_gif(day: Path, out: Path):
 def main(day: str, out: str) -> int:
     day_dir, out_dir = Path(day).expanduser(), Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    r = aapl_market_making(day_dir)
-    waterfall(r, out_dir)
-    imbalance(day_dir, out_dir)
     queue_audit(out_dir)
+    imbalance(day_dir, out_dir)
+    waterfall(aapl_market_making(day_dir), out_dir)
     stocks(day_dir, out_dir)
     a = order_book_gif(day_dir, out_dir)
-    secs = a["t0"] / NS
-    print(f"order book: placed at {int(secs // 3600):02d}:{int(secs // 60 % 60):02d}:{secs % 60:06.3f}, "
-          f"{len(a['frames'])} frames, {a['ahead0']} shares ahead at the start")
+    print(f"order book: placed at {clock(a['t0'])}, {len(a['frames'])} frames, "
+          f"{a['ahead0']} shares ahead at the start")
     for p in sorted(out_dir.iterdir()):
         print(f"  {p.name:28} {p.stat().st_size / 1024:8,.0f} KB")
     return 0
