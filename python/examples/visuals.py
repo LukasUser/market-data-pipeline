@@ -483,6 +483,138 @@ def order_book_gif(day: Path, out: Path):
     return a
 
 
+# --- animated README banner (SVG with CSS animation, which GitHub lets play) -------
+
+LOOP_S = 13  # one pass of the replay, including the hold at the end
+TAPE = ["268.7M messages replayed", "8,892 stocks rebuilt", "0 book errors", "54.7M messages per second",
+        "99.81% of fills matched NASDAQ's queue", "400 backtests across 100 stocks",
+        "39 of 100 stocks profitable at 10 µs", "16 of 100 at 1 ms"]
+CHIPS = ["NASDAQ ITCH", "C++20", "Python", "pybind11", "GoogleTest"]
+
+
+def keyframes(name: str, stops: list[tuple[float, str]]) -> str:
+    """Keeps each value until just before it changes, so the bars step like a
+    real book but slide rather than jump."""
+    out = [f"0%{{{stops[0][1]}}}"]
+    last = stops[0][1]
+    for pct, value in stops[1:]:
+        if value != last:
+            out += [f"{max(pct - 0.5, 0.1):.2f}%{{{last}}}", f"{pct:.2f}%{{{value}}}"]
+            last = value
+    out.append(f"100%{{{last}}}")
+    return f"@keyframes {name}{{{''.join(out)}}}"
+
+
+def banner_svg(t: dict, a: dict, rows: list[int], xmax: float) -> str:
+    frames = a["frames"][::2] + [a["frames"][-1]]
+    pct = [85 * i / (len(frames) - 1) for i in range(len(frames))]
+    scale_w, row_h, top = 186, 19.5, 44
+    bid_edge, ask_edge, price_x = 962, 1046, 1004
+    css, shapes = [], []
+
+    def bar(name, side, price, y):
+        book = "bids" if side == "bid" else "asks"
+        stops = [(p, f"transform:scaleX({min(dict(f[book]).get(price, 0) / xmax, 1):.3f})")
+                 for p, f in zip(pct, frames)]
+        if all(s.endswith("(0.000)") for _, s in stops):
+            return
+        css.append(keyframes(name, stops))
+        x = bid_edge - scale_w if side == "bid" else ask_edge
+        origin = "right" if side == "bid" else "left"
+        color = t["blue"] if side == "bid" else t["orange"]
+        shapes.append(f'<rect x="{x}" y="{y}" width="{scale_w}" height="13" rx="2" fill="{color}" '
+                      f'style="{stops[0][1]};transform-origin:{origin} center;transform-box:fill-box;'
+                      f'animation:{name} {LOOP_S}s linear infinite"/>')
+
+    for i, price in enumerate(reversed(rows)):
+        y = top + i * row_h
+        bar(f"b{i}", "bid", price, y)
+        bar(f"a{i}", "ask", price, y)
+        weight = "700" if price == a["price"] else "400"
+        fill = t["ink"] if price == a["price"] else t["ink2"]
+        shapes.append(f'<text x="{price_x}" y="{y + 11}" text-anchor="middle" class="px" fill="{fill}" '
+                      f'font-weight="{weight}">{dollars(price)}</text>')
+
+    # Our order: a block just behind the shares ahead of it, gone once filled.
+    width = 100 / xmax * scale_w
+    y = top + list(reversed(rows)).index(a["price"]) * row_h
+    move = [(p, f"transform:translateX({-min(f['ours'].ahead / xmax, 1) * scale_w:.1f}px);opacity:1"
+             if f["ours"] is not None else "") for p, f in zip(pct, frames)]
+    first = next(v for _, v in move if v)
+    gone = next(p for (p, v), f in zip(move, frames) if f["fill"] is not None)
+    stops, held = [], first
+    for p, v in move:
+        held = v or held
+        stops.append((p, held if p < gone else held.replace("opacity:1", "opacity:0")))
+    css.append(keyframes("you", stops))
+    shapes.append(f'<g style="{first};animation:you {LOOP_S}s linear infinite">'
+                  f'<rect x="{bid_edge - width:.1f}" y="{y}" width="{width:.1f}" height="13" rx="2" fill="{t["aqua"]}"/>'
+                  f'<text x="{bid_edge - width - 6:.1f}" y="{y + 11}" text-anchor="end" class="you" fill="{t["ink"]}">YOU</text></g>')
+
+    # Status line above the ladder: waiting, then filled.
+    fill_cut = f"{gone:.2f}%"
+    css.append(f"@keyframes wait{{0%,{gone - 0.5:.2f}%{{opacity:1}}{fill_cut},100%{{opacity:0}}}}")
+    css.append(f"@keyframes done{{0%,{gone - 0.5:.2f}%{{opacity:0}}{fill_cut},100%{{opacity:1}}}}")
+    status = (f'<text x="790" y="30" class="status" fill="{t["ink2"]}" style="animation:wait {LOOP_S}s linear infinite">'
+              f'AAPL, Dec 30 2019  ·  {a["ahead0"]} shares ahead of you</text>'
+              f'<text x="790" y="30" class="status" fill="{t["ink2"]}" style="opacity:0;animation:done {LOOP_S}s linear infinite">'
+              f'AAPL, Dec 30 2019  ·  Filled, then the price fell through you</text>')
+
+    chips, x = [], 56
+    for chip in CHIPS:
+        w = len(chip) * 8 + 30
+        chips.append(f'<rect x="{x}" y="248" width="{w}" height="30" rx="15" fill="none" stroke="{t["axis"]}"/>'
+                     f'<text x="{x + w / 2}" y="268" text-anchor="middle" class="chip">{chip}</text>')
+        x += w + 10
+
+    line = "    •    ".join(TAPE) + "    •    "
+    copy_w = round(len(line) * 7.9)
+    tape = "".join(f'<text x="{i * copy_w}" y="339" class="tape" textLength="{copy_w}" lengthAdjust="spacing" '
+                   f'xml:space="preserve">{line}</text>' for i in range(3))
+    alt = ("market-data-pipeline: every order from a real NASDAQ trading day, rebuilt, queued and backtested "
+           "in C++20 and Python")
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="{alt}">
+<style>
+  text {{ font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }}
+  .eyebrow {{ font-size: 14px; font-weight: 600; letter-spacing: 2.4px; fill: {t["muted"]}; }}
+  .title {{ font-size: 62px; font-weight: 700; letter-spacing: -1.5px; fill: {t["ink"]}; }}
+  .tag {{ font-size: 22px; fill: {t["ink2"]}; }}
+  .chip {{ font-size: 14px; font-weight: 500; fill: {t["ink2"]}; }}
+  .tape {{ font-size: 15px; font-weight: 500; fill: {t["ink2"]}; font-variant-numeric: tabular-nums; }}
+  .px {{ font-size: 11.5px; font-variant-numeric: tabular-nums; }}
+  .you {{ font-size: 10px; font-weight: 700; }}
+  .status {{ font-size: 12.5px; font-weight: 600; }}
+  .scroll {{ animation: scroll {copy_w / 34:.0f}s linear infinite; }}
+  @keyframes scroll {{ to {{ transform: translateX(-{copy_w}px); }} }}
+  {"".join(css)}
+  @media (prefers-reduced-motion: reduce) {{ * {{ animation: none !important; }} }}
+</style>
+<defs><clipPath id="card"><rect width="1280" height="360" rx="16"/></clipPath></defs>
+<g clip-path="url(#card)">
+  <rect width="1280" height="360" fill="{t["surface"]}"/>
+  {status}
+  {"".join(shapes)}
+  <text x="56" y="84" class="eyebrow">NASDAQ ITCH 5.0  ·  C++20  ·  PYTHON</text>
+  <text x="52" y="156" class="title">market-data-pipeline</text>
+  <text x="56" y="203" class="tag">Every order from a real NASDAQ trading day,</text>
+  <text x="56" y="231" class="tag">rebuilt, queued and backtested from raw data.</text>
+  {"".join(chips)}
+  <rect y="306" width="1280" height="54" fill="{t["band"]}"/>
+  <g class="scroll">{tape}</g>
+</g>
+<rect x="0.5" y="0.5" width="1279" height="359" rx="16" fill="none" stroke="{t["border"]}"/>
+</svg>
+"""
+
+
+def banner(a: dict, out: Path):
+    rows = list(range(a["price"] - 6 * TICK, a["price"] + 7 * TICK, TICK))
+    visible = [s for f in a["frames"] for p, s in f["bids"] + f["asks"] if p in rows]
+    xmax = sorted(visible)[int(0.95 * (len(visible) - 1))] * 1.1
+    for mode, t in THEMES.items():
+        (out / f"banner-{mode}.svg").write_text(banner_svg(t, a, rows, xmax))
+
+
 def main(day: str, out: str) -> int:
     day_dir, out_dir = Path(day).expanduser(), Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -491,6 +623,7 @@ def main(day: str, out: str) -> int:
     waterfall(aapl_market_making(day_dir), out_dir)
     stocks(day_dir, out_dir)
     a = order_book_gif(day_dir, out_dir)
+    banner(a, out_dir)
     print(f"order book: placed at {clock(a['t0'])}, {len(a['frames'])} frames, "
           f"{a['ahead0']} shares ahead at the start")
     for p in sorted(out_dir.iterdir()):
